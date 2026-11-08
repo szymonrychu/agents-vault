@@ -1,0 +1,466 @@
+{
+  "components": {
+    "schemas": {
+      "AttachmentRef": {
+        "properties": {
+          "env": {
+            "title": "Env",
+            "type": "string"
+          },
+          "preset_id": {
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "preset_name": {
+            "title": "Preset Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset_id",
+          "preset_name",
+          "env"
+        ],
+        "title": "AttachmentRef",
+        "type": "object"
+      },
+      "EntrySummary": {
+        "properties": {
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AttachmentRef"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachments"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "labels",
+          "version",
+          "updated_at",
+          "attachments"
+        ],
+        "title": "EntrySummary",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "PinOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "secret",
+          "name",
+          "version"
+        ],
+        "title": "PinOut",
+        "type": "object"
+      },
+      "PinsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "preset_labels": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Preset Labels",
+            "type": "array"
+          },
+          "refs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Refs",
+            "type": "object"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "refs",
+          "session_id"
+        ],
+        "title": "PinsIn",
+        "type": "object"
+      },
+      "PinsOut": {
+        "properties": {
+          "pins": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PinOut"
+            },
+            "title": "Pins",
+            "type": "object"
+          }
+        },
+        "required": [
+          "pins"
+        ],
+        "title": "PinsOut",
+        "type": "object"
+      },
+      "ResolveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "preset_labels": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Preset Labels",
+            "type": "array"
+          },
+          "refs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Refs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "refs"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
+      "ResolveOut": {
+        "properties": {
+          "mismatched": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mismatched",
+            "type": "array"
+          },
+          "resolved": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Resolved"
+            },
+            "title": "Resolved",
+            "type": "object"
+          },
+          "unknown": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resolved",
+          "unknown",
+          "mismatched"
+        ],
+        "title": "ResolveOut",
+        "type": "object"
+      },
+      "Resolved": {
+        "properties": {
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "matches": {
+            "title": "Matches",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "labels",
+          "version",
+          "matches"
+        ],
+        "title": "Resolved",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "agents-vault-service",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/vault/v1/entries": {
+      "get": {
+        "operationId": "entries_summary_vault_v1_entries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EntrySummary"
+                  },
+                  "title": "Response Entries Summary Vault V1 Entries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "no or an unknown bearer service token (unauthorized)"
+          }
+        },
+        "summary": "Entries Summary"
+      }
+    },
+    "/vault/v1/entries/resolve": {
+      "post": {
+        "operationId": "resolve_vault_v1_entries_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "no or an unknown bearer service token (unauthorized)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+          }
+        },
+        "summary": "Resolve"
+      }
+    },
+    "/vault/v1/pins": {
+      "post": {
+        "operationId": "create_pins_vault_v1_pins_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PinsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "no or an unknown bearer service token (unauthorized)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+          }
+        },
+        "summary": "Create Pins"
+      }
+    },
+    "/vault/v1/pins/{session_id}": {
+      "delete": {
+        "operationId": "release_pins_vault_v1_pins__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "no or an unknown bearer service token (unauthorized)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+          }
+        },
+        "summary": "Release Pins"
+      }
+    }
+  }
+}

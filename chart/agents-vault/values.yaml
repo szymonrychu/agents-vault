@@ -1,0 +1,113 @@
+image:
+  repository: harbor.szymonrichert.pl/containers/agents-vault
+  # Defaults to the chart appVersion (the short sha CI sets when it packages the chart).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Postgres is required; there is no in-chart database (agents-helmfile deploys it).
+# Set exactly one of url and existingSecret; existingSecretKey names the key holding the DSN.
+postgres:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: uri
+
+# The orchestrator the vault asks to resolve sessions. url is required; set exactly one of
+# token and existingSecret.
+orchestrator:
+  url: ""
+  token: ""
+  existingSecret: ""
+  existingSecretKey: token
+
+# Required: an existing Secret holding the service listener bearer tokens (one per line or comma
+# separated, as the service parses them). The key is mounted as the file `tokens` into the
+# service component only.
+serviceListener:
+  tokensSecret:
+    name: ""
+    key: tokens
+
+# Source CIDRs allowed on the web listener. The oauth2-proxy sidecar (see components.web
+# podAnnotations) reaches it from the pod loopback.
+allowedCidrs:
+  - 127.0.0.1/32
+
+# Extra VAULT_* settings; keys must start with VAULT_.
+env: {}
+
+# web: user-facing api (admission by the oauth2-proxy pod annotations set here; writes Secrets).
+# service: the bearer-token api for agents (no Kubernetes API access). sweeper: singleton
+# (one replica, Recreate; deletes expired Secrets), no ports, no probes, no Service.
+components:
+  web:
+    replicas: 1
+    port: 8000
+    podAnnotations: {}
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+  service:
+    replicas: 1
+    port: 8002
+    podAnnotations: {}
+    resources:
+      requests: {cpu: 25m, memory: 128Mi}
+      limits: {memory: 256Mi}
+  sweeper:
+    podAnnotations: {}
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {memory: 128Mi}
+
+podLabels: {}
+terminationGracePeriodSeconds: 30
+
+service:
+  type: ClusterIP
+  port: 80
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Role in the release namespace: create, patch and delete Secrets only (no get, list, watch).
+rbac:
+  create: true
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# The api is routed under /vault on the shared host; only the web service is routed, the
+# service api stays in the cluster. The chart adds no cert-manager annotation: only one Ingress
+# of the host carries it, the others reference the same TLS secret.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: lab.szymonrichert.pl
+      paths:
+        - path: /vault
+          pathType: Prefix
+  tls: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

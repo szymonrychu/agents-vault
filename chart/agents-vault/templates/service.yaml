@@ -1,0 +1,21 @@
+{{- $components := list "web" "service" }}
+{{- range $component := $components }}
+{{- $cfg := index $.Values.components $component }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agents-vault.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "agents-vault.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  type: {{ $.Values.service.type }}
+  ports:
+    - name: http
+      port: {{ if eq $component "web" }}{{ $.Values.service.port }}{{ else }}{{ $cfg.port }}{{ end }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "agents-vault.componentLabels" (dict "context" $ "component" $component) | nindent 4 }}
+{{- end }}

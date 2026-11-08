@@ -1,0 +1,25 @@
+[tools]
+python = "3.14.6"
+uv = "0.12.23"
+ruff = "0.15.20"
+helm = "4.2.4"
+
+[tasks.test]
+description = "Run test"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Run lint"
+run = "uv run ruff check . && uv run ruff format --check ."
+
+[tasks.fmt]
+description = "Run fmt"
+run = "uv run ruff format ."
+
+[tasks."test:chart"]
+description = "Run the chart render tests"
+run = "uv run pytest tests/test_chart.py"
+
+[tasks."lint:chart"]
+description = "Lint the helm chart"
+run = "helm lint chart/agents-vault --set postgres.url=postgresql://x/y --set orchestrator.url=http://o --set orchestrator.token=t --set serviceListener.tokensSecret.name=s"
