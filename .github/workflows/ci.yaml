@@ -1,0 +1,147 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run lint
+
+  # Docker is preinstalled on ubuntu-latest; the database tests start Postgres through testcontainers.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run test
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HARBOR_URL: harbor.szymonrichert.pl
+      IMAGE: harbor.szymonrichert.pl/containers/agents-vault
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute short sha
+        run: echo "SHORTSHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - name: Build image
+        run: docker build -t agents-vault:ci .
+      - name: Smoke test
+        run: docker run --rm agents-vault:ci --help
+      - name: Check non-root user and no dev dependencies
+        run: |
+          test "$(docker run --rm --entrypoint id agents-vault:ci -u)" = 1000
+          ! docker run --rm --entrypoint python agents-vault:ci -c 'import pytest'
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Login to Harbor
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: echo "$HARBOR_PASSWORD" | regctl registry login "$HARBOR_URL" -u "$HARBOR_USERNAME" --pass-stdin
+      # Cloudflare in front of Harbor answers 413 to request bodies over 100MB,
+      # so layers go up in 50MB chunks instead of docker push's single upload.
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker save agents-vault:ci -o image.tar
+          regctl registry set "$HARBOR_URL" --blob-chunk 52428800 --blob-max 52428800
+          regctl image import "$IMAGE:$SHORTSHA" image.tar
+
+  chart-publish:
+    needs: [lint, test, images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      HARBOR_URL: harbor.szymonrichert.pl
+      CHART_REPO: oci://harbor.szymonrichert.pl/charts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
+      - name: Compute version
+        run: |
+          SHA7="${GITHUB_SHA::7}"
+          VERSION="$(scripts/chart-version.sh branch "$GITHUB_REF_NAME" "$GITHUB_SHA")"
+          echo "SHA7=$SHA7" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Login to Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          # Harbor robot accounts reject the Helm 4 login probe, so credentials are written to the registry config.json.
+          mkdir -p "$HOME/.config/helm/registry"
+          AUTH="$(printf '%s:%s' "$HARBOR_USERNAME" "$HARBOR_PASSWORD" | base64 -w0)"
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$HARBOR_URL" "$AUTH" > "$HOME/.config/helm/registry/config.json"
+          echo "$HARBOR_PASSWORD" | regctl registry login "$HARBOR_URL" -u "$HARBOR_USERNAME" --pass-stdin
+      - name: Refuse an existing version
+        run: |
+          if helm show chart "$CHART_REPO/agents-vault" --version "$VERSION" > /dev/null 2>&1; then
+            echo "chart version $VERSION already published; bump chart/agents-vault/Chart.yaml version"
+            exit 1
+          fi
+      - name: Package
+        run: helm package chart/agents-vault --version "$VERSION" --app-version "$SHA7"
+      - name: Push
+        run: helm push "agents-vault-$VERSION.tgz" "$CHART_REPO"
+
+  release:
+    needs: [lint, test, images, chart-publish]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      HARBOR_URL: harbor.szymonrichert.pl
+      IMAGE: harbor.szymonrichert.pl/containers/agents-vault
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      # Prints nothing when HEAD is already in a vX.Y.Z tag; every later step then skips.
+      - name: Compute version
+        id: version
+        run: |
+          version="$(python3 scripts/next_version.py)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main as of 2026-10-25
+        if: steps.version.outputs.version != ''
+      - name: Login to Harbor
+        if: steps.version.outputs.version != ''
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: echo "$HARBOR_PASSWORD" | regctl registry login "$HARBOR_URL" -u "$HARBOR_USERNAME" --pass-stdin
+      # Copying within one repository sends only the manifest under the new tag.
+      - name: Tag image
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          SHORTSHA="${GITHUB_SHA::7}"
+          VERSION_MINOR="${VERSION%.*}"
+          VERSION_MAJOR="${VERSION%%.*}"
+          regctl image copy "$IMAGE:$SHORTSHA" "$IMAGE:$VERSION"
+          regctl image copy "$IMAGE:$SHORTSHA" "$IMAGE:$VERSION_MINOR"
+          regctl image copy "$IMAGE:$SHORTSHA" "$IMAGE:$VERSION_MAJOR"
+      # Last, so a failure before it leaves no tag and a re-run repeats the idempotent copies.
+      - name: Push git tag
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
