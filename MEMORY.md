@@ -2,6 +2,14 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-08 - write protocol decisions
+
+- Writing-row protocol: tx A inserts the `writing` version row under the entry's `FOR UPDATE` plus `pg_advisory_xact_lock` and commits, then Kubernetes gets the Secret, then tx B (locks again) makes it live. The row names the Secret before it exists, so a crash leaves a `writing` row the sweeper (Task 7) can reap; no blind probing for orphan Secrets. `write_secret` deletes the name first because an immutable Secret cannot be applied over, and a leftover can only be a write whose row never committed.
+- A failed create soft-deletes the entry (`deleted_at = now()`, version `retired` with `deleted_at`) in the same transaction (plan correction 6): otherwise the entry row with `current_version = 0` keeps the live name taken (`entries_live_name`). Every read helper ignores `current_version = 0` and deleted entries. A failed rotate only retires the new row; the old version stays live and current.
+- Rotate race rule: tx B makes version n current only when `n > current_version` (read under the lock). A rotate whose Secret write finished after a higher version committed retires its row at once (`retired_at` set, `deleted_at` null) so the sweeper deletes that Secret; it never moves `current_version` backwards. A rotate whose entry was deleted meanwhile retires its row the same way and answers not found. A row the sweeper reaped (no longer `writing`) answers 502.
+- Errors raised for a failed Kubernetes write are raised outside the `except` block, so no exception chain carries the Kubernetes body; only the secret name and the exception type name are logged.
+- `FakeKube` refuses Secret reads on purpose: the real Role has no `get`/`list`/`watch` on secrets, so the KubeApi protocol has no read methods and the fake exposes `get_object`/`list_objects` only to record a `Forbidden` attempt in `forbidden`. A test that asserts `forbidden == []` proves no code path reads a Secret.
+
 ## 2026-11-08 - scaffold decisions
 
 - Template: the process split (one process per listener, one Deployment per component) is agents-taskboard's. The service listener's token file (`VAULT_SERVICE_TOKENS_FILE`, one raw token per line, loaded with `agents_common.service_gate.load_tokens`) is agents-history's pattern, not taskboard's single env token: a file mounted from a Secret lets the hash/rotation story stay in helmfile.
