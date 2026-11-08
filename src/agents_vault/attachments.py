@@ -79,7 +79,8 @@ class AttachmentIndex:
                 return self._cached
             try:
                 presets = await self._list_presets()
-            except (OrchestratorUnavailable, OrchestratorError) as exc:
+            except (OrchestratorUnavailable, OrchestratorError, ValueError) as exc:
+                # ValueError: a 200 whose body is not JSON or has the wrong shape
                 log.warning("attachments unknown: %s", type(exc).__name__)
                 self._cached = None
                 return None

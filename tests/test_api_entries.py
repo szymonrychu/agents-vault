@@ -387,3 +387,18 @@ def test_web_routes_are_absent_from_the_service_app():
     # summary); every other web route is absent from the service app
     assert mine & have == {("GET", E)}
 
+
+async def test_delete_503_on_a_200_with_a_bad_body(web_client, fake_orch):
+    await create(web_client)
+    web_client.app.state.attachments = None
+    web_client.app.state.orchestrator = OrchestratorClient(
+        "http://orch",
+        "t",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="not json")),
+    )
+    r = await web_client.delete(f"{E}/RESEARCH_GPG_KEY")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "orchestrator_unavailable"
+    listed = await web_client.get(E)
+    assert listed.status_code == 200
+    assert listed.json()[0]["attachments_count"] is None

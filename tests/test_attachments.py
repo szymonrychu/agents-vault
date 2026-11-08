@@ -86,3 +86,14 @@ async def test_unreachable_is_none():
 
     client = OrchestratorClient("http://orch", TOKEN, transport=httpx.MockTransport(refuse))
     assert await AttachmentIndex(client.list_presets).by_entry() is None
+
+
+async def test_a_200_with_a_bad_body_is_none_and_not_cached():
+    bodies = iter([httpx.Response(200, text="<html>oops</html>"), httpx.Response(200, json={})])
+
+    client = OrchestratorClient(
+        "http://orch", TOKEN, transport=httpx.MockTransport(lambda request: next(bodies))
+    )
+    index = AttachmentIndex(client.list_presets)
+    assert await index.by_entry() is None  # not JSON
+    assert await index.by_entry() is None  # JSON of the wrong shape (an object, not a list)
