@@ -123,11 +123,31 @@ async def test_project_label_matches_a_preset_carrying_it(service_client, pool, 
     assert bad.json()["mismatched"] == ["A"]
 
 
+async def test_preset_label_outside_the_project_slug_rule_is_accepted_literally(
+    service_client, pool, kube, conn
+):
+    await make(pool, kube, "SLUG_KEY", labels=["project:ab"])
+    await make(pool, kube, "TEAM_KEY", labels=["team-a"])
+    await make(pool, kube, "OPEN_KEY")
+    refs = {"A": "SLUG_KEY", "B": "TEAM_KEY", "C": "OPEN_KEY"}
+    r = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": ["Project:A_B"], "refs": refs}
+    )
+    assert r.status_code == 200
+    assert r.json()["mismatched"] == ["A", "B"]  # no normalisation to another label
+    conn.execute("UPDATE entries SET labels = ARRAY['project:a_b'] WHERE name = 'SLUG_KEY'")
+    r = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": ["project:a_b"], "refs": refs}
+    )
+    assert r.json()["mismatched"] == ["B"]  # the same literal label matches
+    pinned = await service_client.post(P, json=pin_body(labels=["project:a_b"], A="SLUG_KEY"))
+    assert pinned.status_code == 200
+
+
 @pytest.mark.parametrize(
     "body",
     [
         {"preset_labels": ["bad label!"], "refs": {}},
-        {"preset_labels": ["project:Bad_Slug"], "refs": {}},
         {"refs": {f"E{i}": "NAME" for i in range(51)}},
         {"refs": {"lower": "NAME"}},
         {"refs": {"A": "lower"}},

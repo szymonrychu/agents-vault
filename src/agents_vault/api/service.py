@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from agents_common.labels import labels_match
+from agents_common.labels import labels_match, normalize_labels
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -94,8 +94,10 @@ class PinsOut(BaseModel):
 
 
 def _preset_labels(raw: list[str]) -> list[str]:
+    """Preset labels follow the orchestrator's grammar only; the `project:` slug rule is for
+    entry labels, so a preset label such as `project:a_b` is matched literally."""
     with _mapped():
-        return store.clean_labels(raw)
+        return normalize_labels(raw)
 
 
 def _classify(
