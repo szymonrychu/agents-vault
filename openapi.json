@@ -3,6 +3,10 @@
     "schemas": {
       "AttachmentView": {
         "properties": {
+          "entry_env": {
+            "title": "Entry Env",
+            "type": "string"
+          },
           "env": {
             "title": "Env",
             "type": "string"
@@ -31,6 +35,7 @@
           "preset_id",
           "preset_name",
           "env",
+          "entry_env",
           "preset_labels",
           "matches"
         ],
@@ -75,6 +80,18 @@
           },
           "description": {
             "title": "Description",
+            "type": "string"
+          },
+          "envs": {
+            "items": {
+              "$ref": "#/components/schemas/EnvView"
+            },
+            "title": "Envs",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
             "type": "string"
           },
           "labels": {
@@ -124,9 +141,11 @@
           }
         },
         "required": [
+          "id",
           "name",
           "description",
           "labels",
+          "envs",
           "version",
           "created_at",
           "updated_at",
@@ -147,6 +166,13 @@
             "title": "Description",
             "type": "string"
           },
+          "envs": {
+            "items": {
+              "$ref": "#/components/schemas/EnvIn"
+            },
+            "title": "Envs",
+            "type": "array"
+          },
           "labels": {
             "default": [],
             "items": {
@@ -158,18 +184,12 @@
           "name": {
             "title": "Name",
             "type": "string"
-          },
-          "value": {
-            "format": "password",
-            "title": "Value",
-            "type": "string",
-            "writeOnly": true
           }
         },
         "required": [
           "name",
           "description",
-          "value"
+          "envs"
         ],
         "title": "EntryIn",
         "type": "object"
@@ -188,6 +208,22 @@
             ],
             "title": "Description"
           },
+          "envs": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "format": "password",
+                  "type": "string",
+                  "writeOnly": true
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Envs"
+          },
           "labels": {
             "anyOf": [
               {
@@ -201,6 +237,17 @@
               }
             ],
             "title": "Labels"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           }
         },
         "title": "EntryPatch",
@@ -232,6 +279,18 @@
             "title": "Description",
             "type": "string"
           },
+          "envs": {
+            "items": {
+              "$ref": "#/components/schemas/EnvView"
+            },
+            "title": "Envs",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
           "labels": {
             "items": {
               "type": "string"
@@ -258,9 +317,11 @@
           }
         },
         "required": [
+          "id",
           "name",
           "description",
           "labels",
+          "envs",
           "version",
           "created_at",
           "updated_at",
@@ -269,6 +330,68 @@
           "behind_count"
         ],
         "title": "EntryView",
+        "type": "object"
+      },
+      "EnvIn": {
+        "additionalProperties": false,
+        "properties": {
+          "env": {
+            "title": "Env",
+            "type": "string"
+          },
+          "protected": {
+            "title": "Protected",
+            "type": "boolean"
+          },
+          "value": {
+            "format": "password",
+            "title": "Value",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "env",
+          "protected",
+          "value"
+        ],
+        "title": "EnvIn",
+        "type": "object"
+      },
+      "EnvView": {
+        "properties": {
+          "env": {
+            "title": "Env",
+            "type": "string"
+          },
+          "protected": {
+            "title": "Protected",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "env",
+          "protected",
+          "value",
+          "updated_at"
+        ],
+        "title": "EnvView",
         "type": "object"
       },
       "ErrorBody": {
@@ -313,6 +436,18 @@
             "title": "Data",
             "type": "object"
           },
+          "entry_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Id"
+          },
           "entry_name": {
             "anyOf": [
               {
@@ -343,6 +478,7 @@
           "ts",
           "kind",
           "actor",
+          "entry_id",
           "entry_name",
           "data"
         ],
@@ -354,6 +490,10 @@
           "created_at": {
             "format": "date-time",
             "title": "Created At",
+            "type": "string"
+          },
+          "entry_env": {
+            "title": "Entry Env",
             "type": "string"
           },
           "env": {
@@ -373,26 +513,30 @@
         "required": [
           "session_id",
           "env",
+          "entry_env",
           "version",
           "created_at"
         ],
         "title": "PinView",
         "type": "object"
       },
-      "ValueIn": {
+      "ValuesIn": {
         "additionalProperties": false,
         "properties": {
-          "value": {
-            "format": "password",
-            "title": "Value",
-            "type": "string",
-            "writeOnly": true
+          "values": {
+            "additionalProperties": {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            "title": "Values",
+            "type": "object"
           }
         },
         "required": [
-          "value"
+          "values"
         ],
-        "title": "ValueIn",
+        "title": "ValuesIn",
         "type": "object"
       },
       "VersionView": {
@@ -518,7 +662,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "List Entries"
@@ -564,7 +708,7 @@
                 }
               }
             },
-            "description": "name taken (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
           },
           "413": {
             "content": {
@@ -574,7 +718,7 @@
                 }
               }
             },
-            "description": "value larger than VAULT_MAX_VALUE_BYTES (secret_too_large)"
+            "description": "protected values together larger than VAULT_MAX_VALUE_BYTES (secret_too_large)"
           },
           "422": {
             "content": {
@@ -584,7 +728,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "502": {
             "content": {
@@ -600,16 +744,17 @@
         "summary": "Create Entry"
       }
     },
-    "/vault/v1/entries/{name}": {
+    "/vault/v1/entries/{entry_id}": {
       "delete": {
-        "operationId": "delete_entry_vault_v1_entries__name__delete",
+        "operationId": "delete_entry_vault_v1_entries__entry_id__delete",
         "parameters": [
           {
             "in": "path",
-            "name": "name",
+            "name": "entry_id",
             "required": true,
             "schema": {
-              "title": "Name",
+              "format": "uuid",
+              "title": "Entry Id",
               "type": "string"
             }
           }
@@ -646,7 +791,17 @@
                 }
               }
             },
-            "description": "name taken (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "503": {
             "content": {
@@ -662,14 +817,15 @@
         "summary": "Delete Entry"
       },
       "get": {
-        "operationId": "get_entry_vault_v1_entries__name__get",
+        "operationId": "get_entry_vault_v1_entries__entry_id__get",
         "parameters": [
           {
             "in": "path",
-            "name": "name",
+            "name": "entry_id",
             "required": true,
             "schema": {
-              "title": "Name",
+              "format": "uuid",
+              "title": "Entry Id",
               "type": "string"
             }
           }
@@ -704,19 +860,30 @@
               }
             },
             "description": "no such entry (not_found)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Get Entry"
       },
       "patch": {
-        "operationId": "patch_entry_vault_v1_entries__name__patch",
+        "operationId": "patch_entry_vault_v1_entries__entry_id__patch",
         "parameters": [
           {
             "in": "path",
-            "name": "name",
+            "name": "entry_id",
             "required": true,
             "schema": {
-              "title": "Name",
+              "format": "uuid",
+              "title": "Entry Id",
               "type": "string"
             }
           }
@@ -762,6 +929,16 @@
             },
             "description": "no such entry (not_found)"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -770,22 +947,23 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Patch Entry"
       }
     },
-    "/vault/v1/entries/{name}/pins": {
+    "/vault/v1/entries/{entry_id}/pins": {
       "get": {
-        "operationId": "entry_pins_vault_v1_entries__name__pins_get",
+        "operationId": "entry_pins_vault_v1_entries__entry_id__pins_get",
         "parameters": [
           {
             "in": "path",
-            "name": "name",
+            "name": "entry_id",
             "required": true,
             "schema": {
-              "title": "Name",
+              "format": "uuid",
+              "title": "Entry Id",
               "type": "string"
             }
           }
@@ -798,7 +976,7 @@
                   "items": {
                     "$ref": "#/components/schemas/PinView"
                   },
-                  "title": "Response Entry Pins Vault V1 Entries  Name  Pins Get",
+                  "title": "Response Entry Pins Vault V1 Entries  Entry Id  Pins Get",
                   "type": "array"
                 }
               }
@@ -824,21 +1002,32 @@
               }
             },
             "description": "no such entry (not_found)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Entry Pins"
       }
     },
-    "/vault/v1/entries/{name}/value": {
+    "/vault/v1/entries/{entry_id}/value": {
       "put": {
-        "operationId": "rotate_entry_vault_v1_entries__name__value_put",
+        "operationId": "rotate_entry_vault_v1_entries__entry_id__value_put",
         "parameters": [
           {
             "in": "path",
-            "name": "name",
+            "name": "entry_id",
             "required": true,
             "schema": {
-              "title": "Name",
+              "format": "uuid",
+              "title": "Entry Id",
               "type": "string"
             }
           }
@@ -847,7 +1036,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ValueIn"
+                "$ref": "#/components/schemas/ValuesIn"
               }
             }
           },
@@ -892,7 +1081,7 @@
                 }
               }
             },
-            "description": "value larger than VAULT_MAX_VALUE_BYTES (secret_too_large)"
+            "description": "protected values together larger than VAULT_MAX_VALUE_BYTES (secret_too_large)"
           },
           "422": {
             "content": {
@@ -902,7 +1091,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "502": {
             "content": {
@@ -929,6 +1118,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "format": "uuid",
                   "type": "string"
                 },
                 {
@@ -1000,7 +1190,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Events"

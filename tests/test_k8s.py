@@ -25,14 +25,14 @@ def test_secret_name():
 async def test_write_secret_deletes_then_applies_one_immutable_secret():
     kube = FakeKube()
     name = secret_name(ENTRY, 1)
-    await write_secret(kube, "agents", name, ENTRY, SecretStr(canary))
+    await write_secret(kube, "agents", name, ENTRY, {"API_KEY": SecretStr(canary)})
     assert [c.verb for c in kube.calls] == ["delete", "patch"]
     (applied,) = kube.applies
     assert applied.field_manager == "agents-vault"
     obj = applied.obj
     assert obj["type"] == "Opaque"
     assert obj["immutable"] is True
-    assert obj["stringData"] == {"value": canary}
+    assert obj["stringData"] == {"API_KEY": canary}
     assert obj["metadata"]["namespace"] == "agents"
     assert obj["metadata"]["name"] == name
     assert obj["metadata"]["labels"] == {MANAGED_BY_LABEL: MANAGED_BY, ENTRY_LABEL: str(ENTRY)}
@@ -43,13 +43,24 @@ async def test_write_secret_deletes_then_applies_one_immutable_secret():
 async def test_write_secret_keeps_the_value_byte_for_byte():
     kube = FakeKube()
     value = f"  {canary}\n"
-    await write_secret(kube, "agents", secret_name(ENTRY, 1), ENTRY, SecretStr(value))
-    assert kube.applies[0].obj["stringData"] == {"value": value}
+    await write_secret(kube, "agents", secret_name(ENTRY, 1), ENTRY, {"K": SecretStr(value)})
+    assert kube.applies[0].obj["stringData"] == {"K": value}
+
+
+async def test_write_secret_one_key_per_env_and_none_is_an_empty_secret():
+    kube = FakeKube()
+    data = {"USER": SecretStr("u"), "PASSWORD": SecretStr(canary)}
+    await write_secret(kube, "agents", secret_name(ENTRY, 1), ENTRY, data)
+    await write_secret(kube, "agents", secret_name(ENTRY, 2), ENTRY, {})
+    first, second = kube.applies
+    assert first.obj["stringData"] == {"USER": "u", "PASSWORD": canary}
+    assert second.obj["stringData"] == {}
+    assert kube.has("Secret", secret_name(ENTRY, 2))
 
 
 async def test_write_secret_never_reads():
     kube = FakeKube()
-    await write_secret(kube, "agents", secret_name(ENTRY, 1), ENTRY, SecretStr(canary))
+    await write_secret(kube, "agents", secret_name(ENTRY, 1), ENTRY, {"K": SecretStr(canary)})
     assert {c.verb for c in kube.calls} <= {"delete", "patch"}
     assert kube.forbidden == []
 
@@ -57,11 +68,11 @@ async def test_write_secret_never_reads():
 async def test_applying_over_an_existing_immutable_secret_fails_without_the_delete():
     kube = FakeKube()
     name = secret_name(ENTRY, 1)
-    await write_secret(kube, "agents", name, ENTRY, SecretStr(canary))
+    await write_secret(kube, "agents", name, ENTRY, {"K": SecretStr(canary)})
     with pytest.raises(KubeError, match="immutable"):
         await kube.apply(kube.applies[0].obj)
     # write_secret itself deletes the leftover first, so a rewrite succeeds
-    await write_secret(kube, "agents", name, ENTRY, SecretStr("other"))
+    await write_secret(kube, "agents", name, ENTRY, {"K": SecretStr("other")})
     assert len(kube.applies) == 2
 
 

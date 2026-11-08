@@ -2,6 +2,19 @@
 
 Lessons that outlive a session. Newest first.
 
+## 2026-11-08 - multi-env entries (0.2.0, T-72 addendum)
+
+- Entry model fixed by the user: free-text name (trimmed, 1..120, unique case-insensitively among live entries via `entries_live_name` on `lower(name)`), description, labels and an ordered set of 1..20 envs. Each env is protected (value only in the version's Secret, data key = env name) or readable (`entry_envs.value`, at most 4096 bytes, shown in web and service views). Env names may repeat across entries (two `GITHUB_TOKEN` entries for two orgs).
+- `tests/test_migrations.py` allows exactly one value column, `entry_envs.value`: the old "no value column at all" scan is no longer accurate for readable envs. A CHECK makes the value NULL for a protected env, and the protected hard rule (no value, hash or length) still holds.
+- The env set (names, protected flags) is fixed at create (Q21 A): refs name envs and the attachment index is a 15 s cache, so a removal or a readable-to-protected flip cannot be refused reliably. A different shape is a new entry.
+- Rotate takes exactly the protected set (`vault_envs_mismatch` with `missing`/`extra`): the Role has no `get` on Secrets, so an untouched protected value cannot be copied into the new immutable Secret. Readable edits are in place and bump no version for the same reason; sessions get readable values at pin time, and a pin replay answers the current readable value (only protected envs are versioned).
+- An entry with zero protected envs still writes an (empty) version Secret: one code path for create, rotate, pins and GC. The size cap `VAULT_MAX_VALUE_BYTES` is the sum of protected bytes, checked before Postgres.
+- Entries are identified by id (Q19 C): web routes take `{entry_id}`, service refs are `{PRESET_ENV: {entry, env}}`, preset refs `{"vault": "<uuid>", "env": "ENV"}`; a rename is free (no attachment check). The service `GET /entries?name=` binds a name to its id for the cut-over. `events` gained `entry_id` (filter `?entry=<id>`) so an entry's history follows it across renames; `entry_name` keeps the name at the time.
+- Events carry env names only (Q20 A): `entry_created {envs, protected}`, `entry_envs_updated {envs}`, `entry_rotated {version, envs}`; readable values are never in an event.
+- `resolve` reports `unknown`, `bad_env` and `mismatched` as preset env names. `POST /pins` refuses in the order `vault_entry_unknown` (`envs`, `entries`), `vault_env_unknown`, `vault_label_mismatch`, and pins every preset env (readable ones too, storing `entry_env`), so the session holds the version it started with.
+- 422 messages cut the location at the first caller-chosen key (a dict key in `values`, `envs` or `refs` could be a value); only known field and parameter names are shown.
+- Migration 0002 is strict: it refuses to run while any entry or pin row exists (no backfill; the live database had none).
+
 ## 2026-11-08 - write protocol decisions
 
 - Writing-row protocol: tx A inserts the `writing` version row under the entry's `FOR UPDATE` plus `pg_advisory_xact_lock` and commits, then Kubernetes gets the Secret, then tx B (locks again) makes it live. The row names the Secret before it exists, so a crash leaves a `writing` row the sweeper (Task 7) can reap; no blind probing for orphan Secrets. `write_secret` deletes the name first because an immutable Secret cannot be applied over, and a leftover can only be a write whose row never committed.

@@ -1,5 +1,7 @@
 """Service listener routes (spec 4.2): used only by the orchestrator, behind the bearer gate.
-Nothing here creates, rotates, edits or deletes an entry, and no route returns a value."""
+Nothing here creates, rotates, edits or deletes an entry. A preset env refers to one env of an
+entry by entry id; protected envs come back as Secret refs, readable envs as their values. No
+route returns a protected value."""
 
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from agents_vault import store
 from agents_vault.api.entries import _index, _mapped
 from agents_vault.api.errors import ApiError
+from agents_vault.api.schemas import EnvView, env_views
 from agents_vault.db import entries as entries_repo
 from agents_vault.db import events as events_repo
 from agents_vault.db import pins as pins_repo
@@ -23,8 +26,8 @@ from agents_vault.k8s import secret_name
 ACTOR = "orchestrator"
 REFS_MAX = 50
 
-_ENV = re.compile(r"[A-Z_][A-Z0-9_]*")
-_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
+_PRESET_ENV = re.compile(r"[A-Z_][A-Z0-9_]*")
+_ENV = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 
 router = APIRouter()
 
@@ -33,20 +36,30 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-def _check_refs(refs: dict[str, str]) -> dict[str, str]:
+class RefIn(_Strict):
+    entry: uuid.UUID
+    env: str
+
+    @field_validator("env")
+    @classmethod
+    def _env(cls, env: str) -> str:
+        if not _ENV.fullmatch(env):
+            raise ValueError("entry env names must match [A-Z_][A-Z0-9_]{0,127}")
+        return env
+
+
+def _check_refs(refs: dict[str, RefIn]) -> dict[str, RefIn]:
     if len(refs) > REFS_MAX:
         raise ValueError(f"at most {REFS_MAX} refs are allowed")
-    for env, name in refs.items():
-        if not _ENV.fullmatch(env):
-            raise ValueError("env names must match [A-Z_][A-Z0-9_]*")
-        if not _NAME.fullmatch(name):
-            raise ValueError("entry names must match [A-Z_][A-Z0-9_]{0,127}")
+    for env in refs:
+        if not _PRESET_ENV.fullmatch(env):
+            raise ValueError("preset env names must match [A-Z_][A-Z0-9_]*")
     return refs
 
 
 class ResolveIn(_Strict):
     preset_labels: list[str] = []
-    refs: dict[str, str]
+    refs: dict[str, RefIn]
 
     _refs = field_validator("refs")(_check_refs)
 
@@ -59,19 +72,25 @@ class AttachmentRef(BaseModel):
     preset_id: str
     preset_name: str
     env: str
+    entry_env: str
 
 
 class EntrySummary(BaseModel):
+    id: uuid.UUID
     name: str
     description: str
     labels: list[str]
+    envs: list[EnvView]
     version: int
     updated_at: datetime
     attachments: list[AttachmentRef] | None
 
 
 class Resolved(BaseModel):
+    entry: uuid.UUID
     name: str
+    env: str
+    protected: bool
     labels: list[str]
     version: int
     matches: bool
@@ -80,17 +99,19 @@ class Resolved(BaseModel):
 class ResolveOut(BaseModel):
     resolved: dict[str, Resolved]
     unknown: list[str]
+    bad_env: list[str]
     mismatched: list[str]
 
 
 class PinOut(BaseModel):
     secret: str
-    name: str
+    key: str
     version: int
 
 
 class PinsOut(BaseModel):
     pins: dict[str, PinOut]
+    values: dict[str, str]
 
 
 def _preset_labels(raw: list[str]) -> list[str]:
@@ -100,35 +121,68 @@ def _preset_labels(raw: list[str]) -> list[str]:
         return normalize_labels(raw)
 
 
-def _classify(
-    refs: dict[str, str], rows: list[dict[str, Any]], preset_labels: list[str]
-) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
-    """(env -> live entry row, sorted unknown names, mismatched envs)."""
-    by_name = {r["name"]: r for r in rows}
-    found = {env: by_name[name] for env, name in refs.items() if name in by_name}
-    unknown = sorted({name for name in refs.values() if name not in by_name})
-    mismatched = [
-        env for env, row in found.items() if not labels_match(row["labels"], preset_labels)
-    ]
-    return found, unknown, mismatched
+class _Classified:
+    """Each preset env of the refs sorted into found (entry row and env row), unknown entry,
+    unknown env (bad_env) or label mismatch; the three lists hold preset env names."""
+
+    def __init__(
+        self,
+        refs: dict[str, RefIn],
+        rows: list[dict[str, Any]],
+        envs: list[dict[str, Any]],
+        preset_labels: list[str],
+    ) -> None:
+        by_id = {r["id"]: r for r in rows}
+        env_rows = {(e["entry_id"], e["env"]): e for e in envs}
+        self.found: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+        self.unknown: list[str] = []
+        self.bad_env: list[str] = []
+        for preset_env in sorted(refs):
+            ref = refs[preset_env]
+            row = by_id.get(ref.entry)
+            if row is None:
+                self.unknown.append(preset_env)
+            elif (ref.entry, ref.env) not in env_rows:
+                self.bad_env.append(preset_env)
+            else:
+                self.found[preset_env] = (row, env_rows[(ref.entry, ref.env)])
+        self.mismatched = [
+            env
+            for env, (row, _) in self.found.items()
+            if not labels_match(row["labels"], preset_labels)
+        ]
+        self.unknown_entries = sorted({str(refs[e].entry) for e in self.unknown})
+
+
+def _entry_ids(refs: dict[str, RefIn]) -> list[uuid.UUID]:
+    return sorted({ref.entry for ref in refs.values()})
 
 
 @router.get("/entries", response_model=list[EntrySummary])
-async def entries_summary(request: Request, q: str | None = None) -> list[EntrySummary]:
-    rows = await store.list_entries(request.app.state.pool, q)
+async def entries_summary(
+    request: Request, q: str | None = None, name: str | None = None
+) -> list[EntrySummary]:
+    rows = await store.list_entries(request.app.state.pool, q, name=name)
     attached = await _index(request).by_entry()
     return [
         EntrySummary(
+            id=row["id"],
             name=row["name"],
             description=row["description"],
             labels=row["labels"],
+            envs=env_views(row),
             version=row["current_version"],
             updated_at=row["updated_at"],
             attachments=None
             if attached is None
             else [
-                AttachmentRef(preset_id=a.preset_id, preset_name=a.preset_name, env=a.env)
-                for a in attached.get(row["name"], [])
+                AttachmentRef(
+                    preset_id=a.preset_id,
+                    preset_name=a.preset_name,
+                    env=a.env,
+                    entry_env=a.entry_env,
+                )
+                for a in attached.get(str(row["id"]), [])
             ],
         )
         for row in rows
@@ -138,22 +192,42 @@ async def entries_summary(request: Request, q: str | None = None) -> list[EntryS
 @router.post("/entries/resolve", response_model=ResolveOut)
 async def resolve(request: Request, body: ResolveIn) -> ResolveOut:
     preset_labels = _preset_labels(body.preset_labels)
+    ids = _entry_ids(body.refs)
     async with request.app.state.pool.connection() as conn:
-        rows = await entries_repo.live_by_names(conn, sorted(set(body.refs.values())))
-    found, unknown, mismatched = _classify(body.refs, rows, preset_labels)
+        rows = await entries_repo.live_by_ids(conn, ids)
+        envs = await entries_repo.envs_of(conn, ids)
+    got = _Classified(body.refs, rows, envs, preset_labels)
     return ResolveOut(
         resolved={
-            env: Resolved(
+            preset_env: Resolved(
+                entry=row["id"],
                 name=row["name"],
+                env=env["env"],
+                protected=env["protected"],
                 labels=row["labels"],
                 version=row["current_version"],
-                matches=env not in mismatched,
+                matches=preset_env not in got.mismatched,
             )
-            for env, row in found.items()
+            for preset_env, (row, env) in got.found.items()
         },
-        unknown=unknown,
-        mismatched=mismatched,
+        unknown=got.unknown,
+        bad_env=got.bad_env,
+        mismatched=got.mismatched,
     )
+
+
+def _pins_out(items: list[tuple[str, uuid.UUID, str, int, bool, str | None]]) -> PinsOut:
+    """(preset env, entry id, entry env, version, protected, readable value) -> the answer."""
+    pins: dict[str, PinOut] = {}
+    values: dict[str, str] = {}
+    for preset_env, entry_id, entry_env, version, protected, value in items:
+        if protected:
+            pins[preset_env] = PinOut(
+                secret=secret_name(entry_id, version), key=entry_env, version=version
+            )
+        else:
+            values[preset_env] = value or ""
+    return PinsOut(pins=pins, values=values)
 
 
 @router.post("/pins", response_model=PinsOut)
@@ -164,54 +238,67 @@ async def create_pins(request: Request, body: PinsIn) -> PinsOut:
         await pins_repo.lock_session(conn, session_id)
         existing = await pins_repo.session_pins(conn, session_id)
         if existing:
-            # idempotent: the first call wins and the body of a retry is ignored
-            return PinsOut(
-                pins={
-                    r["env"]: PinOut(
-                        secret=secret_name(r["entry_id"], r["version"]),
-                        name=r["name"],
-                        version=r["version"],
+            # idempotent: the first call wins and the body of a retry is ignored; a readable
+            # env answers its current value (readable values are not versioned)
+            return _pins_out(
+                [
+                    (
+                        r["env"],
+                        r["entry_id"],
+                        r["entry_env"],
+                        r["version"],
+                        r["protected"],
+                        r["value"],
                     )
                     for r in existing
-                }
+                ]
             )
-        rows = await pins_repo.share_lock_live_entries(conn, sorted(set(body.refs.values())))
-        found, unknown, mismatched = _classify(body.refs, rows, preset_labels)
-        if unknown:
+        ids = _entry_ids(body.refs)
+        rows = await pins_repo.share_lock_live_entries(conn, ids)
+        envs = await entries_repo.envs_of(conn, ids)
+        got = _Classified(body.refs, rows, envs, preset_labels)
+        if got.unknown:
             raise ApiError(
-                422, "vault_entry_unknown", "some entries do not exist", {"names": unknown}
+                422,
+                "vault_entry_unknown",
+                "some entries do not exist",
+                {"envs": got.unknown, "entries": got.unknown_entries},
             )
-        if mismatched:
+        if got.bad_env:
+            raise ApiError(
+                422, "vault_env_unknown", "some entries have no such env", {"envs": got.bad_env}
+            )
+        if got.mismatched:
             raise ApiError(
                 422,
                 "vault_label_mismatch",
                 "some entries do not match the preset labels",
-                {"envs": mismatched},
+                {"envs": got.mismatched},
             )
-        for env, row in found.items():
-            await pins_repo.insert_pin(conn, session_id, env, row["id"], row["current_version"])
+        items = []
+        for preset_env, (row, env) in got.found.items():
+            version = row["current_version"]
+            await pins_repo.insert_pin(conn, session_id, preset_env, row["id"], env["env"], version)
+            items.append(
+                (preset_env, row["id"], env["env"], version, env["protected"], env["value"])
+            )
+        found = sorted(got.found)
         await events_repo.add_event(
             conn,
             "pins_created",
             ACTOR,
             None,
+            None,
             {
                 "session_id": str(session_id),
-                "envs": sorted(found),
-                "names": [found[e]["name"] for e in sorted(found)],
-                "versions": [found[e]["current_version"] for e in sorted(found)],
+                "envs": found,
+                "entries": [str(got.found[e][0]["id"]) for e in found],
+                "names": [got.found[e][0]["name"] for e in found],
+                "entry_envs": [got.found[e][1]["env"] for e in found],
+                "versions": [got.found[e][0]["current_version"] for e in found],
             },
         )
-        return PinsOut(
-            pins={
-                env: PinOut(
-                    secret=secret_name(row["id"], row["current_version"]),
-                    name=row["name"],
-                    version=row["current_version"],
-                )
-                for env, row in found.items()
-            }
-        )
+        return _pins_out(items)
 
 
 @router.delete("/pins/{session_id}", status_code=204)
@@ -222,6 +309,7 @@ async def release_pins(request: Request, session_id: uuid.UUID) -> Response:
                 conn,
                 "pins_released",
                 ACTOR,
+                None,
                 None,
                 {"session_id": str(session_id), "reason": "orchestrator"},
             )

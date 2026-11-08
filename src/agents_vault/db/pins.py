@@ -21,36 +21,47 @@ async def lock_session(conn: psycopg.AsyncConnection, session_id: UUID) -> None:
 
 
 async def session_pins(conn: psycopg.AsyncConnection, session_id: UUID) -> list[Row]:
-    """Every pin row of a session (released or not) with its entry name."""
+    """Every pin row of a session (released or not) with its entry name and the entry env's
+    protected flag and current readable value (None for a protected env)."""
     cur = conn.cursor(row_factory=dict_row)
     await cur.execute(
-        "SELECT p.env, p.entry_id, p.version, e.name FROM pins p"
-        " JOIN entries e ON e.id = p.entry_id WHERE p.session_id = %s ORDER BY p.env",
+        "SELECT p.env, p.entry_id, p.entry_env, p.version, e.name, ee.protected, ee.value"
+        " FROM pins p JOIN entries e ON e.id = p.entry_id"
+        " JOIN entry_envs ee ON ee.entry_id = p.entry_id AND ee.env = p.entry_env"
+        " WHERE p.session_id = %s ORDER BY p.env",
         (session_id,),
     )
     return await cur.fetchall()
 
 
-async def share_lock_live_entries(conn: psycopg.AsyncConnection, names: list[str]) -> list[Row]:
-    """Live, readable entries called `names`, row-locked FOR SHARE: a rotate or delete (FOR
-    UPDATE) waits until this transaction ends, so the version read here cannot be retired and
-    collected before the pin commits."""
+async def share_lock_live_entries(
+    conn: psycopg.AsyncConnection, entry_ids: list[UUID]
+) -> list[Row]:
+    """Live, readable entries `entry_ids`, row-locked FOR SHARE: a rotate, delete or readable
+    edit (FOR UPDATE) waits until this transaction ends, so the version read here cannot be
+    retired and collected before the pin commits."""
     cur = conn.cursor(row_factory=dict_row)
     await cur.execute(
         "SELECT id, name, labels, current_version FROM entries"
-        " WHERE name = ANY(%s) AND deleted_at IS NULL AND current_version > 0"
+        " WHERE id = ANY(%s) AND deleted_at IS NULL AND current_version > 0"
         " ORDER BY id FOR SHARE",
-        (names,),
+        (entry_ids,),
     )
     return await cur.fetchall()
 
 
 async def insert_pin(
-    conn: psycopg.AsyncConnection, session_id: UUID, env: str, entry_id: UUID, version: int
+    conn: psycopg.AsyncConnection,
+    session_id: UUID,
+    env: str,
+    entry_id: UUID,
+    entry_env: str,
+    version: int,
 ) -> None:
     await conn.execute(
-        "INSERT INTO pins (session_id, env, entry_id, version) VALUES (%s, %s, %s, %s)",
-        (session_id, env, entry_id, version),
+        "INSERT INTO pins (session_id, env, entry_id, entry_env, version)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (session_id, env, entry_id, entry_env, version),
     )
 
 

@@ -1,3 +1,5 @@
+import uuid
+
 import httpx
 from agents_common.fake_orchestrator import FakeOrchestrator
 from agents_common.orchestrator import OrchestratorClient
@@ -5,7 +7,14 @@ from agents_common.orchestrator import OrchestratorClient
 from agents_vault.attachments import ATTACHMENTS_TTL_SECONDS, AttachmentIndex
 
 TOKEN = "t"
-REF = {"env": {"GPG_KEY": {"vault": "RESEARCH_GPG_KEY"}, "PLAIN": "x"}}
+ENTRY = uuid.uuid4()
+REF = {
+    "env": {
+        "GPG_KEY": {"vault": str(ENTRY), "env": "GPG_PRIVATE"},
+        "GPG_PASS": {"vault": str(ENTRY).upper(), "env": "GPG_PASSPHRASE"},
+        "PLAIN": "x",
+    }
+}
 
 
 class Clock:
@@ -25,20 +34,40 @@ def presets_calls(fake):
     return [r for r in fake.requests if r.url.path == "/api/v1/presets"]
 
 
-async def test_scans_env_for_vault_refs():
+async def test_scans_env_for_vault_refs_by_entry_id_per_env():
     fake = FakeOrchestrator(TOKEN)
     ref = fake.add_preset("research", spec=REF, labels=["team-a"])
-    fake.add_preset("plain", spec={"env": {"A": "b", "B": {"other": "x"}, "C": {"vault": 3}}})
+    fake.add_preset(
+        "plain",
+        spec={
+            "env": {
+                "A": "b",
+                "B": {"other": "x"},
+                "C": {"vault": 3, "env": "X"},
+                "D": {"vault": "NOT_A_UUID", "env": "X"},
+                "E": {"vault": str(uuid.uuid4())},
+                "F": {"vault": str(uuid.uuid4()), "env": 7},
+            }
+        },
+    )
     fake.add_preset("nospec")
     got = await build(fake).by_entry()
-    assert list(got) == ["RESEARCH_GPG_KEY"]
-    [att] = got["RESEARCH_GPG_KEY"]
-    assert (att.preset_id, att.preset_name, att.env, att.preset_labels) == (
-        str(ref.id),
-        "research",
-        "GPG_KEY",
-        ["team-a"],
+    assert list(got) == [str(ENTRY)]
+    atts = got[str(ENTRY)]
+    assert [(a.preset_id, a.preset_name, a.env, a.entry_env, a.preset_labels) for a in atts] == [
+        (str(ref.id), "research", "GPG_KEY", "GPG_PRIVATE", ["team-a"]),
+        (str(ref.id), "research", "GPG_PASS", "GPG_PASSPHRASE", ["team-a"]),
+    ]
+
+
+async def test_list_shaped_env_refs():
+    fake = FakeOrchestrator(TOKEN)
+    fake.add_preset(
+        "listy", spec={"env": [{"name": "K", "value": {"vault": str(ENTRY), "env": "KEY"}}]}
     )
+    got = await build(fake).by_entry()
+    [att] = got[str(ENTRY)]
+    assert (att.env, att.entry_env) == ("K", "KEY")
 
 
 async def test_no_refs_is_empty_not_none():
