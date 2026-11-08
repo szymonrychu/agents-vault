@@ -16,6 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from agents_vault.api import entries
 from agents_vault.api.errors import ApiError, error_response
 from agents_vault.settings import Settings
 
@@ -113,8 +114,9 @@ def create_web_app(
     orchestrator: Any = None,
     kube_factory: Callable[[], Any] | None = None,
 ) -> FastAPI:
-    """The user-facing app: source allowlist, no bearer. Routers are added with the routes."""
+    """The user-facing app: source allowlist, no bearer, the entry routes under PREFIX."""
     app = _base_app(settings, pool, "agents-vault", orchestrator, kube_factory)
+    app.include_router(entries.router, prefix=PREFIX)
     app.add_middleware(SourceAllowlist, networks=settings.api_networks())
     return app
 

@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 
+import httpx
 import psycopg
 import pytest
 from agents_common.db.pool import open_pool
@@ -53,3 +54,37 @@ async def pool(db_url: str) -> AsyncIterator[AsyncConnectionPool]:
     opened = await open_pool(db_url)
     yield opened
     await opened.close()
+
+
+@pytest.fixture
+def kube():
+    from fakes.fake_kube import FakeKube
+
+    return FakeKube()
+
+
+@pytest.fixture
+def fake_orch():
+    from agents_common.fake_orchestrator import FakeOrchestrator
+
+    return FakeOrchestrator(ORCHESTRATOR_TOKEN)
+
+
+@pytest.fixture
+async def web_client(settings, pool, kube, fake_orch) -> AsyncIterator[httpx.AsyncClient]:
+    """The web app on a FakeKube and a FakeOrchestrator, called from an allowed peer."""
+    from agents_common.orchestrator import OrchestratorClient
+
+    from agents_vault.api.app import create_web_app
+
+    orchestrator = OrchestratorClient(
+        settings.orchestrator_url,
+        ORCHESTRATOR_TOKEN,
+        transport=httpx.ASGITransport(app=fake_orch.app),
+    )
+    app = create_web_app(settings, pool, orchestrator=orchestrator, kube_factory=lambda: kube)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://vault") as client:
+        client.app = app  # type: ignore[attr-defined]
+        yield client
+    await orchestrator.aclose()

@@ -223,3 +223,13 @@ async def retire_live_versions(conn: psycopg.AsyncConnection, entry_id: UUID) ->
         " WHERE entry_id = %s AND state = 'live'",
         (entry_id,),
     )
+
+
+async def live_pins(conn: psycopg.AsyncConnection, entry_id: UUID) -> list[Row]:
+    """Unreleased pins of an entry, oldest first."""
+    return await _all(
+        conn,
+        "SELECT session_id, env, version, created_at FROM pins"
+        " WHERE entry_id = %s AND released_at IS NULL ORDER BY created_at, session_id, env",
+        (entry_id,),
+    )

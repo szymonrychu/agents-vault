@@ -38,7 +38,7 @@ async def test_web_forbids_peer_outside_allowlist(settings):
     assert denied.json()["error"]["code"] == "forbidden"
     assert probe.status_code == 200
     async with client(app, "127.0.0.1") as c:
-        allowed = await c.get("/vault/v1/entries")
+        allowed = await c.get("/vault/v1/nothing-here")
     assert allowed.status_code == 404
 
 

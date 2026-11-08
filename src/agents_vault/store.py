@@ -281,6 +281,11 @@ async def behind_count(pool: AsyncConnectionPool, entry_id: uuid.UUID) -> int:
         return await repo.behind_count(conn, entry_id)
 
 
+async def live_pins(pool: AsyncConnectionPool, entry_id: uuid.UUID) -> list[Row]:
+    async with pool.connection() as conn:
+        return await repo.live_pins(conn, entry_id)
+
+
 async def list_events(
     pool: AsyncConnectionPool,
     entry: str | None = None,

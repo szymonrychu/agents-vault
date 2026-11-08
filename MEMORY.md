@@ -18,3 +18,14 @@ Lessons that outlive a session. Newest first.
 - Settings bounds: sweeper interval 5..3600 s (below 5 hammers the orchestrator session list, above an hour leaves pins unreleased too long); pin grace 60..86400 s (the window between session create and pin registration); max value 1..1048576 bytes (a Kubernetes Secret is capped at 1 MiB). `VAULT_NAMESPACE` must be a DNS-1123 label (at most 63) because it names the namespace Secrets are written to.
 - Migration 0001 has no column for a value, hash or length of a value; `tests/test_migrations.py` scans `information_schema.columns` for such names.
 - The chart, its mise tasks and the CI `chart` job are added in the chart task; until then `chart-publish` exists in CI but cannot run without `chart/agents-vault`.
+
+## 2026-11-08 web routes and attachments (task 5)
+- Attachments come from the orchestrator (`GET /api/v1/presets`) and are cached 15 s in the web
+  process (`ATTACHMENTS_TTL_SECONDS`). A failed read is never cached.
+- When the orchestrator cannot be asked (unreachable, any error, 401 included) `attachments` and
+  `attachments_count` are null and list/detail still answer 200. The spec is silent; null is the
+  honest "unknown" and keeps the page usable while the orchestrator hash is not yet applied.
+- DELETE always reads fresh (`by_entry(fresh=True)`): a stale cache could miss a ref attached
+  seconds ago. Unknown attachments refuse with 503 `orchestrator_unavailable`; nothing is deleted.
+- The Kubernetes client and the orchestrator client are built lazily on first use (in-cluster
+  ServiceAccount), so a web pod without cluster access still serves reads.
