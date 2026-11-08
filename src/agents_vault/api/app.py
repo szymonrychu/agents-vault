@@ -81,7 +81,10 @@ def _base_app(
     async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:
         # loc and msg only: the input of a failed field can be a secret value
         first = exc.errors()[0] if exc.errors() else {}
-        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+        loc = first.get("loc", ())
+        if first.get("type") == "extra_forbidden":
+            loc = loc[:-1]  # the last element is the caller's own key, which could hold a value
+        where = ".".join(str(p) for p in loc if p != "body")
         message = f"{where}: {first.get('msg', 'invalid request')}" if where else "invalid request"
         return error_response(422, "invalid_request", message)
 

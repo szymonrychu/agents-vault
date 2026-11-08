@@ -43,3 +43,8 @@ Lessons that outlive a session. Newest first.
 - A stale `writing` row (older than 600 s) is reaped by the sweeper: Secret deleted by name, row `retired` with `deleted_at`, and an entry still at `current_version = 0` is soft-deleted (correction 6). The create/rotate writers delete the Secret themselves when they find their row reaped, so the two never fight over bookkeeping.
 - Purge window is 30 days after the entry's `deleted_at`, and only when every version has `deleted_at` (so no live pin can exist). Pins, versions and the entry row go; `events` stay for audit.
 - The Kubernetes client is built lazily once per pass and only when a Secret must be deleted.
+
+## 2026-11-08 openapi, readme, canary (task 8)
+- The canary test found one real leak, fixed: a 422 for a forbidden extra field put the caller's own key (the last `loc` element) into the error message, and a caller can name a key after a value. `extra_forbidden` errors now drop that element. Other 422 messages use only fixed field names.
+- The canary is split: the refusals that happen before the store touches Postgres (422 variants, 413 on create and rotate) run on fakes with no database; the full life (create, rotate, 502 with the canary in the Kubernetes error text, pins, release, delete, sweeper passes, row scan of every table) needs Postgres and runs in CI. It also searches for the base64 forms of the canary.
+- The OpenAPI documents list the statuses per route by hand (`ROUTE_ERRORS`); a test compares the documented paths with the apps' routes, so a new route fails until it is listed.

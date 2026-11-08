@@ -7,8 +7,10 @@ Run `mise run test`, `mise run lint` and `mise run fmt` from this directory.
 ## Commands
 
 - `mise run test` / `lint` / `fmt`.
-- `vault migrate | serve-web | serve-service` (see README); the image entrypoint is `vault`.
+- `vault migrate | serve-web | serve-service | sweeper` (see README); the image entrypoint is `vault`.
 - Release: the `release` job of `.github/workflows/ci.yaml` runs last on a push to main and tags the image and the repo `vX.Y.Z` from conventional commits (`scripts/next_version.py`, byte-identical in every component that releases this way). Deploy only semver tags.
+
+- OpenAPI: after any route or schema change run `uv run python -m agents_vault.api.openapi > openapi.json` and `uv run python -m agents_vault.api.openapi --service > openapi-service.json`; a test fails on drift.
 
 ## Hard rules
 
