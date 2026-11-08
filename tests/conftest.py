@@ -88,3 +88,27 @@ async def web_client(settings, pool, kube, fake_orch) -> AsyncIterator[httpx.Asy
         client.app = app  # type: ignore[attr-defined]
         yield client
     await orchestrator.aclose()
+
+
+@pytest.fixture
+async def service_client(settings, pool, fake_orch) -> AsyncIterator[httpx.AsyncClient]:
+    """The service app (bearer gate) called with the token file token."""
+    from agents_common.orchestrator import OrchestratorClient
+
+    from agents_vault.api.app import create_service_app
+
+    orchestrator = OrchestratorClient(
+        settings.orchestrator_url,
+        ORCHESTRATOR_TOKEN,
+        transport=httpx.ASGITransport(app=fake_orch.app),
+    )
+    app = create_service_app(settings, pool, [SERVICE_TOKEN], orchestrator=orchestrator)
+    transport = httpx.ASGITransport(app=app, client=("10.1.2.3", 50000))
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://vault",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    ) as client:
+        client.app = app  # type: ignore[attr-defined]
+        yield client
+    await orchestrator.aclose()

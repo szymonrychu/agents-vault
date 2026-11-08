@@ -75,6 +75,16 @@ async def get_entry(conn: psycopg.AsyncConnection, name: str) -> Row | None:
     )
 
 
+async def live_by_names(conn: psycopg.AsyncConnection, names: list[str]) -> list[Row]:
+    """Live, readable entries called `names` (no lock: read-only resolve)."""
+    return await _all(
+        conn,
+        f"SELECT {ENTRY_COLUMNS} FROM entries"
+        " WHERE name = ANY(%s) AND deleted_at IS NULL AND current_version > 0",
+        (names,),
+    )
+
+
 def _like(text: str) -> str:
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"

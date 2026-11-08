@@ -374,7 +374,10 @@ def test_web_routes_are_absent_from_the_service_app():
         namespace="agents",
     )
     service = create_service_app(settings, None, ["tok"])
-    have = {(m, route.path) for route in service.routes for m in getattr(route, "methods", ())}
+    # included routers are opaque in app.routes (newer FastAPI): compare the OpenAPI operations
+    have = {(m.upper(), p) for p, ops in service.openapi()["paths"].items() for m in ops}
     mine = {(m, PREFIX + route.path) for route in router.routes for m in route.methods}
     assert mine
-    assert not mine & have
+    # GET /entries exists on both listeners with different shapes (the service one is a
+    # summary); every other web route is absent from the service app
+    assert mine & have == {("GET", E)}

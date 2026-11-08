@@ -29,3 +29,10 @@ Lessons that outlive a session. Newest first.
   seconds ago. Unknown attachments refuse with 503 `orchestrator_unavailable`; nothing is deleted.
 - The Kubernetes client and the orchestrator client are built lazily on first use (in-cluster
   ServiceAccount), so a web pod without cluster access still serves reads.
+
+## 2026-11-08 service listener routes (task 6)
+- `POST /pins` is idempotent per `session_id`: if any pin row of the session exists (released or not) those rows are returned and nothing is written, the body of the retry is ignored. Existing pins win so an orchestrator retry after a rotate cannot move a session to a newer version than the one its pod was started with. A per-session advisory lock serialises concurrent first calls.
+- The live entry rows are read `FOR SHARE` in the pin transaction. A rotate or delete takes `FOR UPDATE` on the entry row (`lock_entry`), so it waits until the pin commits: the version the pin names cannot be retired and collected by the sweeper before the pin row is visible (spec 5.1).
+- `POST /entries/resolve` never answers 422 for an unknown name or a label mismatch: it reports them in `unknown` and `mismatched` and the orchestrator maps them to its own errors. Only a malformed request is 422. `POST /pins` does 422 (`vault_entry_unknown` before `vault_label_mismatch`) because it must not create a half-pinned session.
+- Label matching (`agents_common.labels.labels_match`) is evaluated only in the vault; the orchestrator sends preset labels and never decides.
+- FastAPI hides included routers from `app.routes`; route-set tests compare `app.openapi()["paths"]`.
