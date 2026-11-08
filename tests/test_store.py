@@ -92,11 +92,11 @@ async def test_size_is_checked_in_utf8_bytes_before_any_row_or_kube_call(pool):
         await create(pool, kube, value="x" * (MAX + 1))
     # 513 two-byte characters: 1026 bytes, over the cap although only 513 characters
     with pytest.raises(store.SecretTooLarge):
-        await create(pool, kube, value="é" * 513)
+        await create(pool, kube, value="\u00e9" * 513)
     assert kube.calls == []
     assert await rows(pool, "SELECT 1 FROM entries") == []
     # exactly the cap passes, multi-byte characters included
-    await create(pool, kube, value="é" * 512)
+    await create(pool, kube, value="\u00e9" * 512)
     assert len(kube.applies) == 1
 
 
@@ -151,7 +151,7 @@ async def test_rotate_failure_keeps_version_one_current(pool, caplog):
     caplog.set_level(logging.DEBUG)
     kube = FakeKube()
     entry_id = await create(pool, kube)
-    kube.fail("Secret", secret_name(entry_id, 2), KubeError(f"500: body {canary}"))
+    kube.fail("Secret", secret_name(entry_id, 2), KubeError(f"500: body {canary}"), verbs=["patch"])
     with pytest.raises(store.SecretStoreFailed) as exc:
         await rotate(pool, kube, value=canary)
     assert canary not in str(exc.value)
@@ -281,3 +281,46 @@ async def test_the_value_is_in_no_row(pool):
     for table in ("entries", "versions", "pins", "events"):
         found = await rows(pool, f"SELECT row_to_json(t)::text AS j FROM {table} t")  # noqa: S608
         assert all(canary not in r["j"] for r in found), table
+
+
+async def reap(pool, entry_id, version):
+    """What the sweeper does to a stale `writing` row: retire it and record the Secret gone."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE versions SET state = 'retired', retired_at = now(), deleted_at = now()"
+            " WHERE entry_id = %s AND version = %s",
+            (entry_id, version),
+        )
+
+
+async def test_rotate_reaped_while_writing_deletes_the_secret(pool):
+    kube = FakeKube()
+    entry_id = await create(pool, kube)
+    name = secret_name(entry_id, 2)
+    entered, release = asyncio.Event(), asyncio.Event()
+    kube.apply_gate[name] = (entered, release)
+    task = asyncio.create_task(rotate(pool, kube, value="one"))
+    await entered.wait()
+    await reap(pool, entry_id, 2)
+    release.set()
+    with pytest.raises(store.SecretStoreFailed):
+        await task
+    assert not kube.has("Secret", name)  # our apply landed after the reap: we delete it
+    assert (await store.get_entry(pool, "API_KEY"))["current_version"] == 1
+
+
+async def test_create_reaped_while_writing_deletes_the_secret(pool, monkeypatch):
+    kube = FakeKube()
+    fixed = uuid.uuid4()
+    monkeypatch.setattr(store.uuid, "uuid4", lambda: fixed)
+    name = secret_name(fixed, 1)
+    entered, release = asyncio.Event(), asyncio.Event()
+    kube.apply_gate[name] = (entered, release)
+    task = asyncio.create_task(create(pool, kube))
+    await entered.wait()
+    await reap(pool, fixed, 1)
+    release.set()
+    with pytest.raises(store.SecretStoreFailed):
+        await task
+    assert not kube.has("Secret", name)
+    assert await store.get_entry(pool, "API_KEY") is None
