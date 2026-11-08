@@ -2,7 +2,9 @@ import json
 import secrets
 import uuid
 
+import httpx
 import pytest
+from agents_common.orchestrator import OrchestratorClient
 
 from agents_vault import store
 from agents_vault.api.app import PREFIX, create_service_app
@@ -108,7 +110,7 @@ async def test_too_large_is_413(web_client, settings):
     [
         {"name": "lower"},
         {"description": ""},
-        {"labels": ["project:Bad"]},
+        {"labels": ["project:Bad_Slug"]},
         {"labels": ["bad label"]},
         {"extra": 1},
     ],
@@ -183,7 +185,7 @@ async def test_patch_description_only_and_labels_only(web_client):
 
 
 @pytest.mark.parametrize(
-    "payload", [{}, {"name": "X"}, {"description": ""}, {"labels": ["project:Bad"]}]
+    "payload", [{}, {"name": "X"}, {"description": ""}, {"labels": ["project:Bad_Slug"]}]
 )
 async def test_patch_422(web_client, payload):
     await create(web_client)
@@ -250,10 +252,12 @@ async def test_patch_relabel_reports_mismatched(web_client, fake_orch):
 
 async def test_orchestrator_failure_gives_null_attachments(web_client, fake_orch):
     await create(web_client)
+    web_client.app.state.attachments = None  # create warmed the 15 s cache; start cold
     fake_orch.fail_next("list_presets", 500)
     r = await web_client.get(E)
     assert r.status_code == 200
     assert r.json()[0]["attachments_count"] is None
+    web_client.app.state.attachments = None  # the failed list is not cached; rebuild cold
     fake_orch.fail_next("list_presets", 500)
     d = await web_client.get(f"{E}/RESEARCH_GPG_KEY")
     assert d.status_code == 200
@@ -302,6 +306,7 @@ async def test_delete_204_then_404(web_client):
 
 async def test_cache_hit_on_lists_and_delete_always_asks(web_client, fake_orch):
     await create(web_client)
+    web_client.app.state.attachments = None  # create warmed the cache; the first list asks
     fake_orch.requests.clear()
     await web_client.get(E)
     await web_client.get(E)
@@ -381,3 +386,4 @@ def test_web_routes_are_absent_from_the_service_app():
     # GET /entries exists on both listeners with different shapes (the service one is a
     # summary); every other web route is absent from the service app
     assert mine & have == {("GET", E)}
+
