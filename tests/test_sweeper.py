@@ -6,6 +6,7 @@ import httpx
 import pytest
 from agents_common.orchestrator import OrchestratorClient
 from conftest import ORCHESTRATOR_TOKEN
+from fakes.fake_kube import FlakyKube
 from psycopg.rows import dict_row
 from pydantic import SecretStr
 
@@ -389,3 +390,28 @@ async def test_run_singleton_runs_one_sweeper_at_a_time(db_url, settings, kube):
             t.cancel()
         for p in pools:
             await p.close()
+
+
+async def test_gc_deletes_a_secret_whose_writer_cleanup_failed(pool, settings, orch):
+    kube = FlakyKube()
+    factory = Factory(kube)
+    entry_id = await make(pool, kube)
+    kube.land_then_fail = True
+    original = kube.apply
+
+    async def apply_then_block(obj):
+        kube.block_delete = True
+        return await original(obj)
+
+    kube.apply = apply_then_block
+    with pytest.raises(store.SecretStoreFailed):
+        await store.rotate_entry(
+            pool, kube, NS, "user", name="API_KEY", value=SecretStr("b"), max_value_bytes=1024
+        )
+    name = secret_name(entry_id, 2)
+    assert kube.has("Secret", name)
+    kube.block_delete = False
+    report = await run(pool, settings, orch, factory)
+    assert report.versions_deleted == 1
+    assert not kube.has("Secret", name)
+    assert kube.has("Secret", secret_name(entry_id, 1))

@@ -184,6 +184,26 @@ async def retire_failed_version(
     )
 
 
+async def unstamp_version(conn: psycopg.AsyncConnection, entry_id: UUID, version: int) -> None:
+    """A retired version whose Secret may exist again: GC owns its delete once more."""
+    await conn.execute(
+        "UPDATE versions SET deleted_at = NULL WHERE entry_id = %s AND version = %s"
+        " AND state = 'retired'",
+        (entry_id, version),
+    )
+
+
+async def stamp_version_deleted(
+    conn: psycopg.AsyncConnection, entry_id: UUID, version: int
+) -> None:
+    """A retired version whose Secret was just deleted by the writer: record it gone."""
+    await conn.execute(
+        "UPDATE versions SET deleted_at = now() WHERE entry_id = %s AND version = %s"
+        " AND state = 'retired' AND deleted_at IS NULL",
+        (entry_id, version),
+    )
+
+
 async def soft_delete_entry(conn: psycopg.AsyncConnection, entry_id: UUID) -> None:
     await conn.execute(
         "UPDATE entries SET deleted_at = now(), updated_at = now() WHERE id = %s", (entry_id,)

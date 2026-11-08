@@ -4,7 +4,7 @@ import secrets
 import uuid
 
 import pytest
-from fakes.fake_kube import FakeKube
+from fakes.fake_kube import FakeKube, FlakyKube
 from psycopg.rows import dict_row
 from pydantic import SecretStr
 
@@ -113,7 +113,7 @@ async def test_create_failure_soft_deletes_the_entry(pool, caplog, monkeypatch):
     fixed = uuid.uuid4()
     ids = iter([fixed])
     monkeypatch.setattr(store.uuid, "uuid4", lambda: next(ids, None) or uuid.UUID(int=7))
-    kube.fail("Secret", secret_name(fixed, 1), KubeError(f"422: body {canary}"))
+    kube.fail("Secret", secret_name(fixed, 1), KubeError(f"422: body {canary}"), verbs=["patch"])
     with pytest.raises(store.SecretStoreFailed) as exc:
         await create(pool, kube)
     assert canary not in str(exc.value)
@@ -323,4 +323,92 @@ async def test_create_reaped_while_writing_deletes_the_secret(pool, monkeypatch)
     with pytest.raises(store.SecretStoreFailed):
         await task
     assert not kube.has("Secret", name)
+    assert await store.get_entry(pool, "API_KEY") is None
+
+
+async def test_create_apply_landed_and_cleanup_failed_keeps_the_row_for_gc(pool):
+    kube = FlakyKube()
+    kube.land_then_fail = True
+    original = kube.apply
+
+    async def apply_then_block(obj):
+        kube.block_delete = True  # the cleanup delete that follows the failed apply fails
+        return await original(obj)
+
+    kube.apply = apply_then_block
+    with pytest.raises(store.SecretStoreFailed):
+        await create(pool, kube)
+    (entry,) = await rows(pool, "SELECT * FROM entries")
+    assert entry["deleted_at"] is not None
+    (v,) = await versions(pool, entry["id"])
+    assert v["state"] == "retired"
+    assert v["deleted_at"] is None  # still named: the GC deletes the live Secret later
+    assert kube.has("Secret", secret_name(entry["id"], 1))
+
+
+async def test_rotate_apply_landed_and_cleanup_failed_keeps_the_row_for_gc(pool):
+    kube = FlakyKube()
+    entry_id = await create(pool, kube)
+    kube.land_then_fail = True
+    original = kube.apply
+
+    async def apply_then_block(obj):
+        kube.block_delete = True
+        return await original(obj)
+
+    kube.apply = apply_then_block
+    with pytest.raises(store.SecretStoreFailed):
+        await rotate(pool, kube, value="new")
+    v1, v2 = await versions(pool, entry_id)
+    assert v1["state"] == "live"
+    assert (v2["state"], v2["deleted_at"]) == ("retired", None)
+    assert kube.has("Secret", secret_name(entry_id, 2))
+
+
+async def test_rotate_failure_with_clean_delete_still_stamps_the_row(pool):
+    kube = FlakyKube()
+    entry_id = await create(pool, kube)
+    kube.land_then_fail = True
+    with pytest.raises(store.SecretStoreFailed):
+        await rotate(pool, kube, value="new")
+    _v1, v2 = await versions(pool, entry_id)
+    assert v2["deleted_at"] is not None
+    assert not kube.has("Secret", secret_name(entry_id, 2))
+
+
+async def test_rotate_reaped_and_post_delete_failed_leaves_row_for_gc(pool):
+    kube = FlakyKube()
+    entry_id = await create(pool, kube)
+    name = secret_name(entry_id, 2)
+    entered, release = asyncio.Event(), asyncio.Event()
+    kube.apply_gate[name] = (entered, release)
+    task = asyncio.create_task(rotate(pool, kube, value="one"))
+    await entered.wait()
+    await reap(pool, entry_id, 2)
+    kube.block_delete = True
+    release.set()
+    with pytest.raises(store.SecretStoreFailed):
+        await task
+    assert kube.has("Secret", name)
+    _v1, v2 = await versions(pool, entry_id)
+    assert (v2["state"], v2["deleted_at"]) == ("retired", None)
+
+
+async def test_create_reaped_and_post_delete_failed_leaves_row_for_gc(pool, monkeypatch):
+    kube = FlakyKube()
+    fixed = uuid.uuid4()
+    monkeypatch.setattr(store.uuid, "uuid4", lambda: fixed)
+    name = secret_name(fixed, 1)
+    entered, release = asyncio.Event(), asyncio.Event()
+    kube.apply_gate[name] = (entered, release)
+    task = asyncio.create_task(create(pool, kube))
+    await entered.wait()
+    await reap(pool, fixed, 1)
+    kube.block_delete = True
+    release.set()
+    with pytest.raises(store.SecretStoreFailed):
+        await task
+    assert kube.has("Secret", name)
+    (v,) = await versions(pool, fixed)
+    assert (v["state"], v["deleted_at"]) == ("retired", None)
     assert await store.get_entry(pool, "API_KEY") is None

@@ -72,24 +72,52 @@ def _clean_description(description: str) -> str:
 
 async def _write_or_cleanup(
     kube: KubeApi, namespace: str, entry_id: uuid.UUID, version: int, value: SecretStr
-) -> bool:
-    """Write the version's Secret; True when it failed (after a best-effort delete)."""
+) -> tuple[bool, bool]:
+    """Write the version's Secret; returns (failed, cleaned).
+
+    On failure the name is deleted best-effort (the apply may have landed); `cleaned` says
+    whether that delete succeeded. An uncleaned Secret must stay named by an undeleted row.
+    """
     name = secret_name(entry_id, version)
     try:
         await write_secret(kube, namespace, name, entry_id, value)
     except KubeError as exc:
         log.warning("secret write failed for %s: %s", name, type(exc).__name__)
     else:
-        return False
-    await _delete_quietly(kube, namespace, name)
-    return True
+        return False, True
+    return True, await _delete_quietly(kube, namespace, name)
 
 
-async def _delete_quietly(kube: KubeApi, namespace: str, name: str) -> None:
+async def _delete_quietly(kube: KubeApi, namespace: str, name: str) -> bool:
+    """Best-effort delete; True when the call succeeded (a missing Secret counts)."""
     try:
         await kube.delete("Secret", namespace, name)
     except Exception as exc:
         log.warning("secret cleanup failed for %s: %s", name, type(exc).__name__)
+        return False
+    return True
+
+
+async def _stamp_after_reap(
+    pool: AsyncConnectionPool, kube: KubeApi, namespace: str, entry_id: uuid.UUID, version: int
+) -> None:
+    """Fast-path delete of a Secret that landed after the sweeper reaped its row.
+
+    The row was left unstamped (see the callers), so if this delete fails the GC retries it.
+    """
+    if await _delete_quietly(kube, namespace, secret_name(entry_id, version)):
+        async with pool.connection() as conn, conn.transaction():
+            await repo.lock_entry(conn, entry_id)
+            await repo.stamp_version_deleted(conn, entry_id, version)
+
+
+async def _retire_failed(
+    conn: psycopg.AsyncConnection, entry_id: uuid.UUID, version: int, cleaned: bool
+) -> None:
+    if cleaned:
+        await repo.retire_failed_version(conn, entry_id, version)
+    else:  # the Secret may exist: keep the row undeleted so the GC deletes the name
+        await repo.retire_unwritten_version(conn, entry_id, version)
 
 
 async def create_entry(
@@ -126,13 +154,15 @@ async def create_entry(
     if taken:
         raise NameTaken("an entry with this name already exists")
 
-    failed = await _write_or_cleanup(kube, namespace, entry_id, 1, value)
+    failed, cleaned = await _write_or_cleanup(kube, namespace, entry_id, 1, value)
     async with pool.connection() as conn, conn.transaction():
         await repo.lock_entry(conn, entry_id)
         reaped = not failed and await repo.version_state(conn, entry_id, 1) != "writing"
         if failed or reaped:
-            if failed:  # a reaped row was already retired and stamped by the sweeper
-                await repo.retire_failed_version(conn, entry_id, 1)
+            if failed:
+                await _retire_failed(conn, entry_id, 1, cleaned)
+            else:  # the sweeper retired and stamped the row; our apply landed after it
+                await repo.unstamp_version(conn, entry_id, 1)
             await repo.soft_delete_entry(conn, entry_id)
         else:
             await repo.make_current(conn, entry_id, 1)
@@ -140,9 +170,7 @@ async def create_entry(
                 conn, "entry_created", actor, name, {"name": name, "labels": labels}
             )
     if reaped:
-        # the sweeper deleted the Secret and recorded it gone before our apply landed: no
-        # row names it any more, so this process is the only one that can remove it
-        await _delete_quietly(kube, namespace, secret_name(entry_id, 1))
+        await _stamp_after_reap(pool, kube, namespace, entry_id, 1)
     if failed or reaped:
         raise SecretStoreFailed("the secret could not be stored")
     return entry_id
@@ -169,7 +197,7 @@ async def rotate_entry(
         version = await repo.next_version(conn, entry_id)
         await repo.insert_writing(conn, entry_id, version)
 
-    failed = await _write_or_cleanup(kube, namespace, entry_id, version, value)
+    failed, cleaned = await _write_or_cleanup(kube, namespace, entry_id, version, value)
     gone = False
     async with pool.connection() as conn, conn.transaction():
         current = await repo.lock_entry(conn, entry_id)
@@ -177,9 +205,9 @@ async def rotate_entry(
             raise EntryNotFound("no such entry")
         reaped = not failed and await repo.version_state(conn, entry_id, version) != "writing"
         if failed:
-            await repo.retire_failed_version(conn, entry_id, version)
-        elif reaped:
-            pass  # already retired and stamped by the sweeper
+            await _retire_failed(conn, entry_id, version, cleaned)
+        elif reaped:  # the sweeper retired and stamped the row; our apply landed after it
+            await repo.unstamp_version(conn, entry_id, version)
         elif current["deleted_at"] is not None:
             gone = True  # the entry was deleted while the Secret was written
             await repo.retire_unwritten_version(conn, entry_id, version)
@@ -192,7 +220,7 @@ async def rotate_entry(
                 conn, "entry_rotated", actor, name, {"name": name, "version": version}
             )
     if reaped:
-        await _delete_quietly(kube, namespace, secret_name(entry_id, version))
+        await _stamp_after_reap(pool, kube, namespace, entry_id, version)
     if failed or reaped:
         raise SecretStoreFailed("the secret could not be stored")
     if gone:

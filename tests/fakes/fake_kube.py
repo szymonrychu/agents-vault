@@ -154,3 +154,21 @@ class FakeKube:
 
     async def list_objects(self, kind: str, namespace: str) -> None:
         self._check("list", kind, namespace)
+
+
+class FlakyKube(FakeKube):
+    """The apply lands server-side but reports an error; deletes fail while `block_delete`."""
+
+    block_delete = False
+    land_then_fail = False
+
+    async def apply(self, obj):
+        result = await super().apply(obj)
+        if self.land_then_fail:
+            raise KubeError("timeout after the write landed")
+        return result
+
+    async def delete(self, kind, namespace, name):
+        if self.block_delete:
+            raise KubeError("delete failed")
+        return await super().delete(kind, namespace, name)
