@@ -1,7 +1,8 @@
 """Entries and versions: the SQL under the write protocol in `store.py`.
 
 Every function takes a connection and runs inside the caller's transaction. Rows come back as
-dicts. No value, hash or length of a value is ever stored here (spec 3.2).
+dicts. A readable env value is stored in `entry_envs.value`; no protected value, nor its hash or
+length, is ever stored here (spec 3.2).
 """
 
 from __future__ import annotations
@@ -32,7 +33,8 @@ async def _all(conn: psycopg.AsyncConnection, query: str, params: Any) -> list[R
 async def insert_entry(
     conn: psycopg.AsyncConnection, entry_id: UUID, name: str, description: str, labels: list[str]
 ) -> None:
-    """Insert an entry with current_version 0; a live duplicate name raises UniqueViolation."""
+    """Insert an entry with current_version 0; a live duplicate name (case-insensitive) raises
+    UniqueViolation."""
     await conn.execute(
         "INSERT INTO entries (id, name, description, labels) VALUES (%s, %s, %s, %s)",
         (entry_id, name, description, labels),
@@ -50,39 +52,68 @@ async def lock_entry(conn: psycopg.AsyncConnection, entry_id: UUID) -> Row | Non
     return row
 
 
-async def lock_live_entry(conn: psycopg.AsyncConnection, name: str) -> Row | None:
-    """Lock the live, readable entry called `name` (deleted_at null, a current version)."""
-    found = await _one(
-        conn,
-        "SELECT id FROM entries WHERE name = %s AND deleted_at IS NULL AND current_version > 0",
-        (name,),
-    )
-    if found is None:
-        return None
-    row = await lock_entry(conn, found["id"])
-    # re-check under the lock: a delete may have committed between the two statements
+async def lock_live_entry(conn: psycopg.AsyncConnection, entry_id: UUID) -> Row | None:
+    """Lock the live, readable entry `entry_id` (deleted_at null, a current version)."""
+    row = await lock_entry(conn, entry_id)
     if row is None or row["deleted_at"] is not None or row["current_version"] < 1:
         return None
     return row
 
 
-async def get_entry(conn: psycopg.AsyncConnection, name: str) -> Row | None:
+async def get_entry(conn: psycopg.AsyncConnection, entry_id: UUID) -> Row | None:
     return await _one(
         conn,
         f"SELECT {ENTRY_COLUMNS} FROM entries"
-        " WHERE name = %s AND deleted_at IS NULL AND current_version > 0",
-        (name,),
+        " WHERE id = %s AND deleted_at IS NULL AND current_version > 0",
+        (entry_id,),
     )
 
 
-async def live_by_names(conn: psycopg.AsyncConnection, names: list[str]) -> list[Row]:
-    """Live, readable entries called `names` (no lock: read-only resolve)."""
+async def live_by_ids(conn: psycopg.AsyncConnection, entry_ids: list[UUID]) -> list[Row]:
+    """Live, readable entries `entry_ids` (no lock: read-only resolve)."""
     return await _all(
         conn,
         f"SELECT {ENTRY_COLUMNS} FROM entries"
-        " WHERE name = ANY(%s) AND deleted_at IS NULL AND current_version > 0",
-        (names,),
+        " WHERE id = ANY(%s) AND deleted_at IS NULL AND current_version > 0",
+        (entry_ids,),
     )
+
+
+async def insert_envs(
+    conn: psycopg.AsyncConnection, entry_id: UUID, envs: list[tuple[str, bool, str | None]]
+) -> None:
+    """The entry's ordered env set: (env, protected, readable value or None when protected)."""
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO entry_envs (entry_id, env, position, protected, value)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            [
+                (entry_id, env, position, protected, value)
+                for position, (env, protected, value) in enumerate(envs)
+            ],
+        )
+
+
+async def envs_of(conn: psycopg.AsyncConnection, entry_ids: list[UUID]) -> list[Row]:
+    """The env rows of `entry_ids`, in entry order then env position."""
+    return await _all(
+        conn,
+        "SELECT entry_id, env, protected, value, updated_at FROM entry_envs"
+        " WHERE entry_id = ANY(%s) ORDER BY entry_id, position",
+        (entry_ids,),
+    )
+
+
+async def update_env_values(
+    conn: psycopg.AsyncConnection, entry_id: UUID, values: dict[str, str]
+) -> None:
+    """New values of readable envs, in place (no version); call under `lock_entry`."""
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "UPDATE entry_envs SET value = %s, updated_at = now()"
+            " WHERE entry_id = %s AND env = %s AND NOT protected",
+            [(value, entry_id, env) for env, value in values.items()],
+        )
 
 
 def _like(text: str) -> str:
@@ -91,12 +122,19 @@ def _like(text: str) -> str:
 
 
 async def list_entries(
-    conn: psycopg.AsyncConnection, q: str | None = None, labels: list[str] | None = None
+    conn: psycopg.AsyncConnection,
+    q: str | None = None,
+    labels: list[str] | None = None,
+    name: str | None = None,
 ) -> list[Row]:
     """Live entries by name; `q` is a case-insensitive substring of name, description or a
-    label, `labels` keeps entries sharing at least one of them."""
+    label, `labels` keeps entries sharing at least one of them, `name` is an exact
+    case-insensitive name."""
     where = ["deleted_at IS NULL", "current_version > 0"]
     params: dict[str, Any] = {}
+    if name is not None:
+        where.append("lower(name) = lower(%(name)s)")
+        params["name"] = name
     if q:
         where.append(
             "(name ILIKE %(q)s OR description ILIKE %(q)s"
@@ -108,7 +146,8 @@ async def list_entries(
         params["labels"] = labels
     return await _all(
         conn,
-        f"SELECT {ENTRY_COLUMNS} FROM entries WHERE {' AND '.join(where)} ORDER BY name",
+        f"SELECT {ENTRY_COLUMNS} FROM entries WHERE {' AND '.join(where)}"
+        " ORDER BY lower(name), name",
         params,
     )
 
@@ -239,12 +278,18 @@ async def make_current(conn: psycopg.AsyncConnection, entry_id: UUID, version: i
 
 
 async def update_fields(
-    conn: psycopg.AsyncConnection, entry_id: UUID, description: str, labels: list[str]
+    conn: psycopg.AsyncConnection, entry_id: UUID, name: str, description: str, labels: list[str]
 ) -> None:
+    """A live duplicate name (case-insensitive) raises UniqueViolation."""
     await conn.execute(
-        "UPDATE entries SET description = %s, labels = %s, updated_at = now() WHERE id = %s",
-        (description, labels, entry_id),
+        "UPDATE entries SET name = %s, description = %s, labels = %s, updated_at = now()"
+        " WHERE id = %s",
+        (name, description, labels, entry_id),
     )
+
+
+async def touch(conn: psycopg.AsyncConnection, entry_id: UUID) -> None:
+    await conn.execute("UPDATE entries SET updated_at = now() WHERE id = %s", (entry_id,))
 
 
 async def retire_live_versions(conn: psycopg.AsyncConnection, entry_id: UUID) -> None:
@@ -259,7 +304,7 @@ async def live_pins(conn: psycopg.AsyncConnection, entry_id: UUID) -> list[Row]:
     """Unreleased pins of an entry, oldest first."""
     return await _all(
         conn,
-        "SELECT session_id, env, version, created_at FROM pins"
+        "SELECT session_id, env, entry_env, version, created_at FROM pins"
         " WHERE entry_id = %s AND released_at IS NULL ORDER BY created_at, session_id, env",
         (entry_id,),
     )

@@ -3,6 +3,10 @@
     "schemas": {
       "AttachmentRef": {
         "properties": {
+          "entry_env": {
+            "title": "Entry Env",
+            "type": "string"
+          },
           "env": {
             "title": "Env",
             "type": "string"
@@ -19,7 +23,8 @@
         "required": [
           "preset_id",
           "preset_name",
-          "env"
+          "env",
+          "entry_env"
         ],
         "title": "AttachmentRef",
         "type": "object"
@@ -44,6 +49,18 @@
             "title": "Description",
             "type": "string"
           },
+          "envs": {
+            "items": {
+              "$ref": "#/components/schemas/EnvView"
+            },
+            "title": "Envs",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
           "labels": {
             "items": {
               "type": "string"
@@ -66,14 +83,52 @@
           }
         },
         "required": [
+          "id",
           "name",
           "description",
           "labels",
+          "envs",
           "version",
           "updated_at",
           "attachments"
         ],
         "title": "EntrySummary",
+        "type": "object"
+      },
+      "EnvView": {
+        "properties": {
+          "env": {
+            "title": "Env",
+            "type": "string"
+          },
+          "protected": {
+            "title": "Protected",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "env",
+          "protected",
+          "value",
+          "updated_at"
+        ],
+        "title": "EnvView",
         "type": "object"
       },
       "ErrorBody": {
@@ -109,8 +164,8 @@
       },
       "PinOut": {
         "properties": {
-          "name": {
-            "title": "Name",
+          "key": {
+            "title": "Key",
             "type": "string"
           },
           "secret": {
@@ -124,7 +179,7 @@
         },
         "required": [
           "secret",
-          "name",
+          "key",
           "version"
         ],
         "title": "PinOut",
@@ -143,7 +198,7 @@
           },
           "refs": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RefIn"
             },
             "title": "Refs",
             "type": "object"
@@ -169,12 +224,40 @@
             },
             "title": "Pins",
             "type": "object"
+          },
+          "values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "object"
           }
         },
         "required": [
-          "pins"
+          "pins",
+          "values"
         ],
         "title": "PinsOut",
+        "type": "object"
+      },
+      "RefIn": {
+        "additionalProperties": false,
+        "properties": {
+          "entry": {
+            "format": "uuid",
+            "title": "Entry",
+            "type": "string"
+          },
+          "env": {
+            "title": "Env",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry",
+          "env"
+        ],
+        "title": "RefIn",
         "type": "object"
       },
       "ResolveIn": {
@@ -190,7 +273,7 @@
           },
           "refs": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RefIn"
             },
             "title": "Refs",
             "type": "object"
@@ -204,6 +287,13 @@
       },
       "ResolveOut": {
         "properties": {
+          "bad_env": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Bad Env",
+            "type": "array"
+          },
           "mismatched": {
             "items": {
               "type": "string"
@@ -229,6 +319,7 @@
         "required": [
           "resolved",
           "unknown",
+          "bad_env",
           "mismatched"
         ],
         "title": "ResolveOut",
@@ -236,6 +327,15 @@
       },
       "Resolved": {
         "properties": {
+          "entry": {
+            "format": "uuid",
+            "title": "Entry",
+            "type": "string"
+          },
+          "env": {
+            "title": "Env",
+            "type": "string"
+          },
           "labels": {
             "items": {
               "type": "string"
@@ -251,13 +351,20 @@
             "title": "Name",
             "type": "string"
           },
+          "protected": {
+            "title": "Protected",
+            "type": "boolean"
+          },
           "version": {
             "title": "Version",
             "type": "integer"
           }
         },
         "required": [
+          "entry",
           "name",
+          "env",
+          "protected",
           "labels",
           "version",
           "matches"
@@ -291,6 +398,22 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
             }
           }
         ],
@@ -365,7 +488,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_env_unknown, vault_label_mismatch)"
           }
         },
         "summary": "Resolve"
@@ -413,7 +536,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_env_unknown, vault_label_mismatch)"
           }
         },
         "summary": "Create Pins"
@@ -456,7 +579,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request, vault_entry_unknown, vault_label_mismatch)"
+            "description": "invalid request (invalid_request, vault_entry_unknown, vault_env_unknown, vault_label_mismatch)"
           }
         },
         "summary": "Release Pins"

@@ -16,7 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from agents_vault.api import entries, service
+from agents_vault.api import entries, schemas, service
 from agents_vault.api.errors import ApiError, error_response
 from agents_vault.settings import Settings
 
@@ -59,6 +59,39 @@ class SourceAllowlist:
         await response(scope, receive, send)
 
 
+def _known_names() -> frozenset[str]:
+    """Field and parameter names a validation message may show: the request models' fields,
+    the routes' query and path parameters and the loc roots."""
+    models = [
+        entries.EntryIn,
+        entries.EntryPatch,
+        entries.ValuesIn,
+        schemas.EnvIn,
+        service.RefIn,
+        service.ResolveIn,
+        service.PinsIn,
+    ]
+    names = {"body", "query", "path", "header", "cookie"}
+    names |= {"q", "label", "name", "entry", "before_id", "limit", "entry_id", "session_id"}
+    for model in models:
+        names |= set(model.model_fields)
+    return frozenset(names)
+
+
+KNOWN_NAMES = _known_names()
+
+
+def _safe_loc(loc: tuple[Any, ...]) -> tuple[Any, ...]:
+    """The loc up to the first caller-chosen key: a dict key (an env name in `values`, `envs`
+    or `refs`) is the caller's own text and could hold a value, so it is never shown."""
+    out: list[Any] = []
+    for part in loc:
+        if not (isinstance(part, int) or part in KNOWN_NAMES):
+            break
+        out.append(part)
+    return tuple(out)
+
+
 def _base_app(
     settings: Settings,
     pool: AsyncConnectionPool,
@@ -81,10 +114,10 @@ def _base_app(
     async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:
         # loc and msg only: the input of a failed field can be a secret value
         first = exc.errors()[0] if exc.errors() else {}
-        loc = first.get("loc", ())
+        loc = tuple(first.get("loc", ()))
         if first.get("type") == "extra_forbidden":
             loc = loc[:-1]  # the last element is the caller's own key, which could hold a value
-        where = ".".join(str(p) for p in loc if p != "body")
+        where = ".".join(str(p) for p in _safe_loc(loc) if p != "body")
         message = f"{where}: {first.get('msg', 'invalid request')}" if where else "invalid request"
         return error_response(422, "invalid_request", message)
 

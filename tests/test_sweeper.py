@@ -64,7 +64,7 @@ async def make(pool, kube, name="API_KEY"):
         name=name,
         description="d",
         labels=[],
-        value=SecretStr("v"),
+        envs=[store.EnvIn("API_KEY", True, SecretStr("v"))],
         max_value_bytes=1024,
     )
 
@@ -73,8 +73,8 @@ async def pin(pool, entry_id, version=1, env="E", age_seconds=3600, sid=None):
     sid = sid or uuid.uuid4()
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO pins (session_id, env, entry_id, version, created_at)"
-            " VALUES (%s, %s, %s, %s, now() - make_interval(secs => %s))",
+            "INSERT INTO pins (session_id, env, entry_id, entry_env, version, created_at)"
+            " VALUES (%s, %s, %s, 'API_KEY', %s, now() - make_interval(secs => %s))",
             (sid, env, entry_id, version, age_seconds),
         )
     return sid
@@ -128,7 +128,13 @@ async def test_orchestrator_error_releases_nothing_but_gc_and_reap_run(
     entry_id = await make(pool, kube)
     sid = await pin(pool, entry_id)
     await store.rotate_entry(
-        pool, kube, NS, "user", name="API_KEY", value=SecretStr("w"), max_value_bytes=1024
+        pool,
+        kube,
+        NS,
+        "user",
+        entry_id=entry_id,
+        values={"API_KEY": SecretStr("w")},
+        max_value_bytes=1024,
     )
     # v1 retired but pinned: stays; a stale writing row is reaped
     async with pool.connection() as conn:
@@ -167,7 +173,13 @@ async def test_gc_deletes_only_retired_versions_without_live_pins(
     list_session(fake_orch, sid)
     for v in ("b", "c"):
         await store.rotate_entry(
-            pool, kube, NS, "user", name="API_KEY", value=SecretStr(v), max_value_bytes=1024
+            pool,
+            kube,
+            NS,
+            "user",
+            entry_id=entry_id,
+            values={"API_KEY": SecretStr(v)},
+            max_value_bytes=1024,
         )
     kube.reset_records()
     report = await run(pool, settings, orch, factory)
@@ -194,7 +206,13 @@ async def test_gc_kube_failure_leaves_row_for_next_pass(
 ):
     entry_id = await make(pool, kube)
     await store.rotate_entry(
-        pool, kube, NS, "user", name="API_KEY", value=SecretStr("b"), max_value_bytes=1024
+        pool,
+        kube,
+        NS,
+        "user",
+        entry_id=entry_id,
+        values={"API_KEY": SecretStr("b")},
+        max_value_bytes=1024,
     )
     kube.fail("Secret", secret_name(entry_id, 1), verbs=["delete"], times=1)
     with caplog.at_level(logging.WARNING):
@@ -213,7 +231,7 @@ async def test_gc_kube_failure_leaves_row_for_next_pass(
 async def test_deleted_entry_collected_after_pins_release(pool, settings, orch, kube, factory):
     entry_id = await make(pool, kube)
     sid = await pin(pool, entry_id)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=entry_id)
     await run(pool, settings, orch, factory)
     # the pin is old and unlisted: released in unit 1, collected by GC in the same pass
     assert await released(pool, sid) == [True]
@@ -228,7 +246,7 @@ async def test_deleted_entry_with_live_pin_keeps_its_secret(
     entry_id = await make(pool, kube)
     sid = await pin(pool, entry_id)
     list_session(fake_orch, sid)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=entry_id)
     await run(pool, settings, orch, factory)
     assert kube.has("Secret", secret_name(entry_id, 1))
 
@@ -298,19 +316,19 @@ async def _age_deleted(pool, entry_id, days):
 async def test_purge_after_thirty_days_keeps_events(pool, settings, orch, kube, factory):
     entry_id = await make(pool, kube)
     await pin(pool, entry_id)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=entry_id)
     await run(pool, settings, orch, factory)  # releases the pin, collects the version
     await _age_deleted(pool, entry_id, 31)
     report = await run(pool, settings, orch, factory)
     assert report.entries_purged == 1
-    for table in ("entries", "versions", "pins"):
+    for table in ("entries", "entry_envs", "versions", "pins"):
         assert await rows(pool, f"SELECT 1 FROM {table}") == []  # noqa: S608
     assert len(await rows(pool, "SELECT 1 FROM events")) >= 2
 
 
 async def test_purge_keeps_a_29_day_old_entry(pool, settings, orch, kube, factory):
     entry_id = await make(pool, kube)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=entry_id)
     await run(pool, settings, orch, factory)
     await _age_deleted(pool, entry_id, 29)
     report = await run(pool, settings, orch, factory)
@@ -322,7 +340,7 @@ async def test_purge_waits_for_undeleted_versions(pool, settings, orch, fake_orc
     entry_id = await make(pool, kube)
     sid = await pin(pool, entry_id)
     list_session(fake_orch, sid)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=entry_id)
     await _age_deleted(pool, entry_id, 40)
     await run(pool, settings, orch, factory)
     assert len(await rows(pool, "SELECT 1 FROM entries")) == 1
@@ -336,11 +354,16 @@ async def test_no_kube_client_when_nothing_to_delete(pool, settings, orch, kube,
 
 
 async def test_kube_client_built_once_per_pass(pool, settings, orch, kube, factory):
-    await make(pool, kube, "A_KEY")
-    await make(pool, kube, "B_KEY")
     for name in ("A_KEY", "B_KEY"):
+        entry_id = await make(pool, kube, name)
         await store.rotate_entry(
-            pool, kube, NS, "user", name=name, value=SecretStr("b"), max_value_bytes=1024
+            pool,
+            kube,
+            NS,
+            "user",
+            entry_id=entry_id,
+            values={"API_KEY": SecretStr("b")},
+            max_value_bytes=1024,
         )
     report = await run(pool, settings, orch, factory)
     assert report.versions_deleted == 2
@@ -406,7 +429,13 @@ async def test_gc_deletes_a_secret_whose_writer_cleanup_failed(pool, settings, o
     kube.apply = apply_then_block
     with pytest.raises(store.SecretStoreFailed):
         await store.rotate_entry(
-            pool, kube, NS, "user", name="API_KEY", value=SecretStr("b"), max_value_bytes=1024
+            pool,
+            kube,
+            NS,
+            "user",
+            entry_id=entry_id,
+            values={"API_KEY": SecretStr("b")},
+            max_value_bytes=1024,
         )
     name = secret_name(entry_id, 2)
     assert kube.has("Secret", name)

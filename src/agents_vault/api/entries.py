@@ -1,8 +1,10 @@
-"""Web listener routes (spec 4.1): the user-facing entry API. No route returns a value."""
+"""Web listener routes (spec 4.1): the user-facing entry API. Entries are addressed by id. No
+route returns a protected value; readable env values are part of the views."""
 
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
@@ -20,8 +22,9 @@ from agents_vault.api.schemas import (
     EntryView,
     EventView,
     PinView,
-    ValueIn,
+    ValuesIn,
     VersionView,
+    env_views,
 )
 from agents_vault.attachments import Attachment, AttachmentIndex
 from agents_vault.k8s import KubeApi, LightkubeApi
@@ -36,7 +39,8 @@ router = APIRouter()
 
 @contextmanager
 def _mapped() -> Iterator[None]:
-    """Store errors as API errors. Messages are fixed text or label text, never a value."""
+    """Store errors as API errors. Messages are fixed text, env names or label text, never a
+    value."""
     try:
         yield
     except store.NameTaken as exc:
@@ -47,6 +51,16 @@ def _mapped() -> Iterator[None]:
         raise ApiError(502, "secret_store_failed", str(exc)) from None
     except store.EntryNotFound:
         raise ApiError(404, "not_found", "no such entry") from None
+    except store.EnvsMismatch as exc:
+        raise ApiError(
+            422, "vault_envs_mismatch", str(exc), {"missing": exc.missing, "extra": exc.extra}
+        ) from None
+    except store.NothingToRotate as exc:
+        raise ApiError(422, "vault_nothing_to_rotate", str(exc)) from None
+    except store.EnvProtected as exc:
+        raise ApiError(422, "vault_env_protected", str(exc), {"envs": exc.envs}) from None
+    except store.EnvUnknown as exc:
+        raise ApiError(422, "vault_env_unknown", str(exc), {"envs": exc.envs}) from None
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from None
 
@@ -72,6 +86,7 @@ def _attachment_view(att: Attachment, entry_labels: list[str]) -> AttachmentView
         preset_id=att.preset_id,
         preset_name=att.preset_name,
         env=att.env,
+        entry_env=att.entry_env,
         preset_labels=att.preset_labels,
         matches=labels_match(entry_labels, att.preset_labels),
     )
@@ -82,13 +97,15 @@ async def _view(
 ) -> EntryView:
     pool = request.app.state.pool
     return EntryView(
+        id=entry["id"],
         name=entry["name"],
         description=entry["description"],
         labels=entry["labels"],
+        envs=env_views(entry),
         version=entry["current_version"],
         created_at=entry["created_at"],
         updated_at=entry["updated_at"],
-        attachments_count=None if attached is None else len(attached.get(entry["name"], [])),
+        attachments_count=None if attached is None else len(attached.get(str(entry["id"]), [])),
         pinned_sessions_count=await store.pinned_sessions_count(pool, entry["id"]),
         behind_count=await store.behind_count(pool, entry["id"]),
     )
@@ -101,7 +118,7 @@ async def _detail(request: Request, entry: dict[str, Any]) -> EntryDetail:
     attachments = mismatched = None
     if attached is not None:
         attachments = [
-            _attachment_view(a, entry["labels"]) for a in attached.get(entry["name"], [])
+            _attachment_view(a, entry["labels"]) for a in attached.get(str(entry["id"]), [])
         ]
         mismatched = [a for a in attachments if not a.matches]
     return EntryDetail(
@@ -112,8 +129,8 @@ async def _detail(request: Request, entry: dict[str, Any]) -> EntryDetail:
     )
 
 
-async def _live(request: Request, name: str) -> dict[str, Any]:
-    entry = await store.get_entry(request.app.state.pool, name)
+async def _live(request: Request, entry_id: uuid.UUID) -> dict[str, Any]:
+    entry = await store.get_entry(request.app.state.pool, entry_id)
     if entry is None:
         raise ApiError(404, "not_found", "no such entry")
     return entry
@@ -133,7 +150,7 @@ async def list_entries(
 async def create_entry(request: Request, body: EntryIn) -> EntryView:
     settings = request.app.state.settings
     with _mapped():
-        await store.create_entry(
+        entry_id = await store.create_entry(
             request.app.state.pool,
             _kube(request),
             settings.namespace,
@@ -141,32 +158,34 @@ async def create_entry(request: Request, body: EntryIn) -> EntryView:
             name=body.name,
             description=body.description,
             labels=body.labels,
-            value=body.value,
+            envs=[store.EnvIn(e.env, e.protected, e.value) for e in body.envs],
             max_value_bytes=settings.max_value_bytes,
         )
-    return await _view(request, await _live(request, body.name), await _index(request).by_entry())
+    return await _view(request, await _live(request, entry_id), await _index(request).by_entry())
 
 
-@router.get("/entries/{name}", response_model=EntryDetail)
-async def get_entry(request: Request, name: str) -> EntryDetail:
-    return await _detail(request, await _live(request, name))
+@router.get("/entries/{entry_id}", response_model=EntryDetail)
+async def get_entry(request: Request, entry_id: uuid.UUID) -> EntryDetail:
+    return await _detail(request, await _live(request, entry_id))
 
 
-@router.patch("/entries/{name}", response_model=EntryDetail)
-async def patch_entry(request: Request, name: str, body: EntryPatch) -> EntryDetail:
+@router.patch("/entries/{entry_id}", response_model=EntryDetail)
+async def patch_entry(request: Request, entry_id: uuid.UUID, body: EntryPatch) -> EntryDetail:
     with _mapped():
         await store.update_entry(
             request.app.state.pool,
             ACTOR,
-            name=name,
+            entry_id=entry_id,
+            name=body.name,
             description=body.description,
             labels=body.labels,
+            envs=body.envs,
         )
-    return await _detail(request, await _live(request, name))
+    return await _detail(request, await _live(request, entry_id))
 
 
-@router.put("/entries/{name}/value", response_model=EntryView)
-async def rotate_entry(request: Request, name: str, body: ValueIn) -> EntryView:
+@router.put("/entries/{entry_id}/value", response_model=EntryView)
+async def rotate_entry(request: Request, entry_id: uuid.UUID, body: ValuesIn) -> EntryView:
     settings = request.app.state.settings
     with _mapped():
         await store.rotate_entry(
@@ -174,23 +193,23 @@ async def rotate_entry(request: Request, name: str, body: ValueIn) -> EntryView:
             _kube(request),
             settings.namespace,
             ACTOR,
-            name=name,
-            value=body.value,
+            entry_id=entry_id,
+            values=body.values,
             max_value_bytes=settings.max_value_bytes,
         )
-    return await _view(request, await _live(request, name), await _index(request).by_entry())
+    return await _view(request, await _live(request, entry_id), await _index(request).by_entry())
 
 
-@router.delete("/entries/{name}", status_code=204)
-async def delete_entry(request: Request, name: str) -> Response:
-    await _live(request, name)
+@router.delete("/entries/{entry_id}", status_code=204)
+async def delete_entry(request: Request, entry_id: uuid.UUID) -> Response:
+    await _live(request, entry_id)
     # fresh read: a cached answer could miss a ref attached seconds ago
     attached = await _index(request).by_entry(fresh=True)
     if attached is None:
         raise ApiError(
             503, "orchestrator_unavailable", "attachments cannot be checked, nothing was deleted"
         )
-    refs = attached.get(name, [])
+    refs = attached.get(str(entry_id), [])
     if refs:
         raise ApiError(
             409,
@@ -198,19 +217,24 @@ async def delete_entry(request: Request, name: str) -> Response:
             "the entry is referenced by presets",
             {
                 "attachments": [
-                    {"preset_id": a.preset_id, "preset_name": a.preset_name, "env": a.env}
+                    {
+                        "preset_id": a.preset_id,
+                        "preset_name": a.preset_name,
+                        "env": a.env,
+                        "entry_env": a.entry_env,
+                    }
                     for a in refs
                 ]
             },
         )
     with _mapped():
-        await store.delete_entry(request.app.state.pool, ACTOR, name=name)
+        await store.delete_entry(request.app.state.pool, ACTOR, entry_id=entry_id)
     return Response(status_code=204)
 
 
-@router.get("/entries/{name}/pins", response_model=list[PinView])
-async def entry_pins(request: Request, name: str) -> list[PinView]:
-    entry = await _live(request, name)
+@router.get("/entries/{entry_id}/pins", response_model=list[PinView])
+async def entry_pins(request: Request, entry_id: uuid.UUID) -> list[PinView]:
+    entry = await _live(request, entry_id)
     rows = await store.live_pins(request.app.state.pool, entry["id"])
     return [PinView(**{k: r[k] for k in PinView.model_fields}) for r in rows]
 
@@ -218,7 +242,7 @@ async def entry_pins(request: Request, name: str) -> list[PinView]:
 @router.get("/events", response_model=list[EventView])
 async def events(
     request: Request,
-    entry: str | None = None,
+    entry: uuid.UUID | None = None,
     before_id: int | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[EventView]:

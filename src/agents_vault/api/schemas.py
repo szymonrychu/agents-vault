@@ -1,5 +1,5 @@
-"""Request and response models of the web routes. A value is a SecretStr in requests and is
-not a field of any response."""
+"""Request and response models of the web routes. Every value is a SecretStr in requests; a
+response carries only readable env values, never a protected one."""
 
 from __future__ import annotations
 
@@ -14,32 +14,49 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EnvIn(_Strict):
+    env: str
+    protected: bool
+    value: SecretStr
+
+
 class EntryIn(_Strict):
     name: str
     description: str
     labels: list[str] = []
-    value: SecretStr
+    envs: list[EnvIn]
 
 
 class EntryPatch(_Strict):
+    name: str | None = None
     description: str | None = None
     labels: list[str] | None = None
+    envs: dict[str, SecretStr] | None = None
 
     @model_validator(mode="after")
     def _something(self) -> EntryPatch:
-        if self.description is None and self.labels is None:
-            raise ValueError("give description or labels")
+        if (self.name, self.description, self.labels, self.envs) == (None, None, None, None):
+            raise ValueError("give name, description, labels or envs")
         return self
 
 
-class ValueIn(_Strict):
-    value: SecretStr
+class ValuesIn(_Strict):
+    values: dict[str, SecretStr]
+
+
+class EnvView(BaseModel):
+    env: str
+    protected: bool
+    value: str | None
+    updated_at: datetime
 
 
 class EntryView(BaseModel):
+    id: uuid.UUID
     name: str
     description: str
     labels: list[str]
+    envs: list[EnvView]
     version: int
     created_at: datetime
     updated_at: datetime
@@ -60,6 +77,7 @@ class AttachmentView(BaseModel):
     preset_id: str
     preset_name: str
     env: str
+    entry_env: str
     preset_labels: list[str]
     matches: bool
 
@@ -73,6 +91,7 @@ class EntryDetail(EntryView):
 class PinView(BaseModel):
     session_id: uuid.UUID
     env: str
+    entry_env: str
     version: int
     created_at: datetime
 
@@ -82,5 +101,16 @@ class EventView(BaseModel):
     ts: datetime
     kind: str
     actor: str
+    entry_id: uuid.UUID | None
     entry_name: str | None
     data: dict[str, Any]
+
+
+def env_views(entry: dict[str, Any]) -> list[EnvView]:
+    """The entry's envs; a protected env has no value (none is stored)."""
+    return [
+        EnvView(
+            env=e["env"], protected=e["protected"], value=e["value"], updated_at=e["updated_at"]
+        )
+        for e in entry["envs"]
+    ]

@@ -1,9 +1,9 @@
 """The Kubernetes calls the vault makes: apply and delete one Secret by name, nothing else.
 
 The Role grants Secrets only create, patch and delete, so a Secret is never read or listed:
-it is applied and deleted by its deterministic name `vault-<entry uuid>-v<n>`. A value is held
-as a `SecretStr` until it goes into `stringData`; the apply response is dropped and no
-Kubernetes error body is ever logged.
+it is applied and deleted by its deterministic name `vault-<entry uuid>-v<n>`, one data key per
+protected env of the entry. A value is held as a `SecretStr` until it goes into `stringData`;
+the apply response is dropped and no Kubernetes error body is ever logged.
 
 `LightkubeApi` is the production implementation; `tests/fakes/fake_kube.py:FakeKube` is the
 in-memory one that also enforces the Role.
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -26,7 +26,6 @@ from pydantic import SecretStr
 log = logging.getLogger(__name__)
 
 FIELD_MANAGER = "agents-vault"
-VALUE_KEY = "value"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY = "agents-vault"
 ENTRY_LABEL = "vault.agents.szymonrichert.pl/entry"
@@ -114,9 +113,10 @@ class LightkubeApi:
 
 
 async def write_secret(
-    kube: KubeApi, namespace: str, name: str, entry_id: UUID, value: SecretStr
+    kube: KubeApi, namespace: str, name: str, entry_id: UUID, data: Mapping[str, SecretStr]
 ) -> None:
-    """Apply the immutable Secret `name`, first deleting a leftover of that name.
+    """Apply the immutable Secret `name` holding `data` (env name -> protected value), first
+    deleting a leftover of that name. An empty `data` still writes the Secret (one code path).
 
     The name is never live when this runs (its version row is `writing`), so a leftover is a
     write whose row never committed; an immutable Secret cannot be applied over. Raises
@@ -134,6 +134,6 @@ async def write_secret(
             },
             "type": "Opaque",
             "immutable": True,
-            "stringData": {VALUE_KEY: value.get_secret_value()},
+            "stringData": {env: value.get_secret_value() for env, value in data.items()},
         }
     )

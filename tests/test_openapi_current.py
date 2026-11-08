@@ -19,7 +19,11 @@ SETTINGS = Settings(
     orchestrator_token="t",
     namespace="agents",
 )
-REQUEST_ONLY = {"EntryIn", "ValueIn"}
+REQUEST_ONLY = {"EnvIn", "EntryIn", "EntryPatch", "ValuesIn"}
+# The response schemas carrying values: a readable env's value (null for a protected env) in
+# the views, and the readable values a pin call answers (protected envs come back as refs).
+READABLE_VIEW = "EnvView"
+READABLE_PINS = "PinsOut"
 
 
 def _walk(router, prefix: str = ""):
@@ -81,17 +85,27 @@ def test_service_document_has_no_entry_writes_except_resolve():
 def test_no_response_schema_has_a_value_property(service):
     schemas = document(service)["components"]["schemas"]
     for name, schema in schemas.items():
-        if name in REQUEST_ONLY:
+        if name in REQUEST_ONLY or name in (READABLE_VIEW, READABLE_PINS):
             continue
-        assert "value" not in schema.get("properties", {}), name
+        for banned in ("value", "values"):
+            assert banned not in schema.get("properties", {}), name
+    assert set(schemas[READABLE_VIEW]["properties"]) == {"env", "protected", "value", "updated_at"}
+    if service:
+        assert set(schemas[READABLE_PINS]["properties"]) == {"pins", "values"}
+        assert set(schemas["PinOut"]["properties"]) == {"secret", "key", "version"}
 
 
-def test_value_is_a_request_property_only():
+def test_request_values_are_write_only_and_never_in_a_response():
     doc = document()
-    assert "value" in doc["components"]["schemas"]["EntryIn"]["properties"]
-    assert "value" in doc["components"]["schemas"]["ValueIn"]["properties"]
+    schemas = doc["components"]["schemas"]
+    secret = {"format": "password", "type": "string", "writeOnly": True}
+    assert schemas["EnvIn"]["properties"]["value"] == {**secret, "title": "Value"}
+    assert schemas["ValuesIn"]["properties"]["values"]["additionalProperties"] == secret
+    patch_envs = schemas["EntryPatch"]["properties"]["envs"]["anyOf"][0]
+    assert patch_envs["additionalProperties"] == secret
     for path, methods in doc["paths"].items():
         for method, op in methods.items():
             for status, response in op["responses"].items():
                 text = json.dumps(response)
-                assert "EntryIn" not in text and "ValueIn" not in text, (method, path, status)
+                for name in REQUEST_ONLY:
+                    assert f"/{name}" not in text, (method, path, status)

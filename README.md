@@ -4,7 +4,12 @@ Part of the workdir project (python).
 
 ## What this is
 
-A write-only secret vault for the agents system. Users create and rotate named secrets through the web UI; the value goes straight into an immutable Kubernetes Secret (one per version) and is never stored in Postgres, logged or returned by any route. The orchestrator pins versions to sessions through the service listener. The service has its own Postgres database (entries, versions, pins, events).
+A write-only secret vault for the agents system. An entry is a free-text name (unique case-insensitively among live entries), a description, labels and an ordered set of 1..20 envs fixed at create. Each env is protected or readable:
+
+- a protected env's value goes straight into an immutable Kubernetes Secret (one per version, one data key per protected env) and is never stored in Postgres (no value, hash or length), logged or returned by any route;
+- a readable env's value (at most 4096 bytes) is stored in Postgres, shown in the web and service views, edited in place without a new version, and never put into an event.
+
+The orchestrator pins versions to sessions through the service listener: a protected env comes back as a Secret ref, a readable env as its value. The service has its own Postgres database (entries, entry envs, versions, pins, events).
 
 ## Development
 
@@ -41,7 +46,7 @@ Every process reads one validated `VAULT_*` environment. A bad or missing variab
 | `VAULT_SERVICE_PORT` | `8002` | service listener port (1..65535, different from the web port) |
 | `VAULT_SWEEPER_INTERVAL_SECONDS` | `60` | sweeper pass interval (5..3600) |
 | `VAULT_PIN_GRACE_SECONDS` | `600` | grace before an unregistered pin is treated as lost (60..86400) |
-| `VAULT_MAX_VALUE_BYTES` | `1048576` | largest accepted secret value in UTF-8 bytes (1..1048576) |
+| `VAULT_MAX_VALUE_BYTES` | `1048576` | largest accepted sum of an entry's protected values in UTF-8 bytes (1..1048576) |
 | `VAULT_LOG_LEVEL` | `INFO` | log level |
 | `VAULT_SHUTDOWN_GRACE_SECONDS` | `20` | graceful shutdown wait |
 
@@ -53,59 +58,61 @@ The vault's Kubernetes Role on `secrets` grants exactly the verbs `create`, `pat
 
 ## Errors
 
-Every error is `{"error": {"code": "...", "message": "...", ...extra}}`. A validation error is `422 invalid_request` with a message built from the field location and the rule, never from the input.
+Every error is `{"error": {"code": "...", "message": "...", ...extra}}`. A validation error is `422 invalid_request` with a message built from the field location and the rule, never from the input; a caller-chosen key (an env name in `values`, `envs` or `refs`) is cut from the location.
 
 ## Web API
 
-Served by `vault serve-web` for users, behind the source allowlist (`403 forbidden` outside it). No route returns a secret value; `value` appears only in request bodies. Documented in `openapi.json`.
+Served by `vault serve-web` for users, behind the source allowlist (`403 forbidden` outside it). Entries are addressed by id (`{entry_id}`, a uuid; anything else is 422). No route returns a protected value; readable env values are part of the views. Documented in `openapi.json`.
+
+An entry view is `{id, name, description, labels, envs, version, created_at, updated_at, attachments_count, pinned_sessions_count, behind_count}`, each env `{env, protected, value, updated_at}` with `value` null for a protected env.
 
 ### `GET /vault/v1/entries`
 
-Query: `q` (substring of name or description), `label` (repeatable). Returns the list of entry views. Statuses: 200, 403, 422.
+Query: `q` (substring of name, description or a label), `label` (repeatable). Returns the list of entry views. Statuses: 200, 403, 422.
 
 ### `POST /vault/v1/entries`
 
-Body `{name, description, labels, value}`. Name `^[A-Z_][A-Z0-9_]{0,127}$`, description 1..500 characters, value at most `VAULT_MAX_VALUE_BYTES` bytes. Creates the entry and version 1. Statuses: 201, 403, 409 `vault_name_taken`, 413 `secret_too_large`, 422, 502 `secret_store_failed`.
+Body `{name, description, labels, envs: [{env, protected, value}]}`. Name is free text, trimmed, 1..120 characters; no NUL character in the name, description, labels or a readable value; description 1..500 characters; 1..20 envs, each name `^[A-Z_][A-Z0-9_]{0,127}$` and unique within the entry (names may repeat across entries); a readable value is at most 4096 bytes; the protected values together are at most `VAULT_MAX_VALUE_BYTES` bytes. Creates the entry and version 1 (its Secret holds the protected envs, possibly none). Statuses: 201, 403, 409 `vault_name_taken` (case-insensitive), 413 `secret_too_large`, 422, 502 `secret_store_failed`.
 
-### `GET /vault/v1/entries/{name}`
+### `GET /vault/v1/entries/{entry_id}`
 
-Entry detail: view, versions, attachments and mismatched attachments. Statuses: 200, 403, 404.
+Entry detail: view, versions, attachments (one per preset env referencing an env of the entry, with `entry_env`) and mismatched attachments. Statuses: 200, 403, 404, 422.
 
-### `PATCH /vault/v1/entries/{name}`
+### `PATCH /vault/v1/entries/{entry_id}`
 
-Body `{description?, labels?}`, at least one. Statuses: 200, 403, 404, 422.
+Body `{name?, description?, labels?, envs?: {ENV: value}}`, at least one. A rename is free (refs carry the id) but stays unique case-insensitively. `envs` sets readable values in place: no new version, `updated_at` per env. Statuses: 200, 403, 404, 409 `vault_name_taken`, 422 (`vault_env_protected` or `vault_env_unknown` with `envs`, `invalid_request`).
 
-### `PUT /vault/v1/entries/{name}/value`
+### `PUT /vault/v1/entries/{entry_id}/value`
 
-Body `{value}`. Writes a new immutable version and makes it current. Statuses: 200, 403, 404, 413, 422, 502.
+Body `{values: {ENV: value}}` naming exactly the protected envs of the entry (`422 vault_envs_mismatch` with `missing` and `extra` otherwise; an entry without a protected env has nothing to rotate, `422 vault_nothing_to_rotate`). Writes a new immutable version holding the whole protected set and makes it current. Statuses: 200, 403, 404, 413, 422, 502.
 
-### `DELETE /vault/v1/entries/{name}`
+### `DELETE /vault/v1/entries/{entry_id}`
 
-Refused while a preset references the entry. Statuses: 204, 403, 404, 409 `vault_entry_attached` (with `attachments`), 503 `orchestrator_unavailable`.
+Refused while a preset references the entry. Statuses: 204, 403, 404, 409 `vault_entry_attached` (with `attachments`), 422, 503 `orchestrator_unavailable`.
 
-### `GET /vault/v1/entries/{name}/pins`
+### `GET /vault/v1/entries/{entry_id}/pins`
 
-Sessions pinning a version of the entry. Statuses: 200, 403, 404.
+Sessions pinning a version of the entry, with the preset env and the entry env. Statuses: 200, 403, 404, 422.
 
 ### `GET /vault/v1/events`
 
-Query: `entry`, `before_id`, `limit` (1..200, default 50). Newest first. Statuses: 200, 403, 422.
+Query: `entry` (entry id), `before_id`, `limit` (1..200, default 50). Newest first. Events carry entry and env names, versions and ids, never a value. Statuses: 200, 403, 422.
 
 ## Service API
 
-Served by `vault serve-service` for the orchestrator, behind the bearer gate (`401 unauthorized` without a known token). It cannot create, rotate, edit or delete an entry. Documented in `openapi-service.json`.
+Served by `vault serve-service` for the orchestrator, behind the bearer gate (`401 unauthorized` without a known token). It cannot create, rotate, edit or delete an entry. A preset references one env of an entry as `{"vault": "<entry id>", "env": "ENV"}`; the refs below are `{PRESET_ENV: {entry: <entry id>, env: ENV}}` (at most 50). Documented in `openapi-service.json`.
 
 ### `GET /vault/v1/entries`
 
-Query: `q`. Entry summaries with attachments. Statuses: 200, 401.
+Query: `q`, `name` (exact, case-insensitive: binds a name to its id). Entry summaries `{id, name, description, labels, envs, version, updated_at, attachments}` with readable values. Statuses: 200, 401.
 
 ### `POST /vault/v1/entries/resolve`
 
-Body `{preset_labels, refs}` where `refs` maps env name to entry name (at most 50). Returns `{resolved, unknown, mismatched}`. Statuses: 200, 401, 422.
+Body `{preset_labels, refs}`. Returns `{resolved, unknown, bad_env, mismatched}`: `resolved` per preset env, and the preset envs whose entry is unknown, whose entry has no such env, or whose entry labels do not match. Statuses: 200, 401, 422.
 
 ### `POST /vault/v1/pins`
 
-Body `{session_id, preset_labels, refs}`. Pins the current version of each entry to the session and returns the Secret name per env; a repeat call for the same session returns the first answer. Statuses: 200, 401, 422 (`vault_entry_unknown` with `names`, `vault_label_mismatch` with `envs`).
+Body `{session_id, preset_labels, refs}`. Pins the current version of each entry to the session and returns `{pins: {PRESET_ENV: {secret, key, version}}, values: {PRESET_ENV: value}}`: a Secret name and data key per protected env, the value per readable env. A repeat call for the same session returns the first pins (readable values as they are now). Statuses: 200, 401, 422 (`vault_entry_unknown` with `envs` and `entries`, then `vault_env_unknown` with `envs`, then `vault_label_mismatch` with `envs`).
 
 ### `DELETE /vault/v1/pins/{session_id}`
 

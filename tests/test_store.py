@@ -16,8 +16,19 @@ NS = "agents"
 MAX = 1024
 
 
+NAME = "API key"
+
+
+def protected(env="API_KEY", value=canary):
+    return store.EnvIn(env, True, SecretStr(value))
+
+
+def readable(env, value):
+    return store.EnvIn(env, False, SecretStr(value))
+
+
 async def create(
-    pool, kube, name="API_KEY", value=canary, labels=None, max_bytes=MAX, actor="user"
+    pool, kube, name=NAME, value=canary, labels=None, max_bytes=MAX, actor="user", envs=None
 ):
     return await store.create_entry(
         pool,
@@ -27,15 +38,26 @@ async def create(
         name=name,
         description="a key",
         labels=labels or [],
-        value=SecretStr(value),
+        envs=envs if envs is not None else [protected(value=value)],
         max_value_bytes=max_bytes,
     )
 
 
-async def rotate(pool, kube, name="API_KEY", value=canary):
+async def rotate(pool, kube, entry_id, value=canary, values=None):
     return await store.rotate_entry(
-        pool, kube, NS, "user", name=name, value=SecretStr(value), max_value_bytes=MAX
+        pool,
+        kube,
+        NS,
+        "user",
+        entry_id=entry_id,
+        values=values if values is not None else {"API_KEY": SecretStr(value)},
+        max_value_bytes=MAX,
     )
+
+
+async def only(pool):
+    (entry,) = await store.list_entries(pool)
+    return entry
 
 
 async def rows(pool, query, params=()):
@@ -54,49 +76,179 @@ async def versions(pool, entry_id):
 async def test_create_makes_version_one_live(pool):
     kube = FakeKube()
     entry_id = await create(pool, kube, labels=["Team-A"])
-    entry = await store.get_entry(pool, "API_KEY")
-    assert entry["id"] == entry_id
+    entry = await store.get_entry(pool, entry_id)
+    assert entry["name"] == NAME
     assert entry["current_version"] == 1
     assert entry["labels"] == ["team-a"]
     (v,) = await versions(pool, entry_id)
     assert (v["version"], v["state"], v["deleted_at"]) == (1, "live", None)
     assert kube.has("Secret", secret_name(entry_id, 1))
-    (event,) = await store.list_events(pool, "API_KEY")
+    (event,) = await store.list_events(pool, entry_id)
     assert event["kind"] == "entry_created"
     assert event["actor"] == "user"
-    assert event["data"] == {"name": "API_KEY", "labels": ["team-a"]}
+    assert event["entry_id"] == entry_id
+    assert event["data"] == {
+        "name": NAME,
+        "labels": ["team-a"],
+        "envs": ["API_KEY"],
+        "protected": ["API_KEY"],
+    }
     assert canary not in str(event)
 
 
-async def test_duplicate_live_name_is_taken(pool):
+async def test_create_with_mixed_envs_keeps_order_and_splits_values(pool):
+    kube = FakeKube()
+    envs = [
+        readable("HARBOR_URL", "https://harbor.example"),
+        protected("HARBOR_PASSWORD", canary),
+        readable("HARBOR_USERNAME", "robot-user"),
+        protected("HARBOR_TOKEN", "tok"),
+    ]
+    entry_id = await create(pool, kube, name="Harbor admin credentials", envs=envs)
+    entry = await store.get_entry(pool, entry_id)
+    assert [(e["env"], e["protected"], e["value"]) for e in entry["envs"]] == [
+        ("HARBOR_URL", False, "https://harbor.example"),
+        ("HARBOR_PASSWORD", True, None),
+        ("HARBOR_USERNAME", False, "robot-user"),
+        ("HARBOR_TOKEN", True, None),
+    ]
+    (applied,) = kube.applied("Secret")
+    assert applied.obj["stringData"] == {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "tok"}
+    (event,) = await store.list_events(pool, entry_id)
+    assert event["data"]["envs"] == [
+        "HARBOR_URL",
+        "HARBOR_PASSWORD",
+        "HARBOR_USERNAME",
+        "HARBOR_TOKEN",
+    ]
+    assert event["data"]["protected"] == ["HARBOR_PASSWORD", "HARBOR_TOKEN"]
+    assert "https://harbor.example" not in str(event) and "robot-user" not in str(event)
+
+
+async def test_zero_protected_entry_still_writes_an_empty_secret(pool):
+    kube = FakeKube()
+    entry_id = await create(pool, kube, envs=[readable("URL", "https://x")])
+    assert (await store.get_entry(pool, entry_id))["current_version"] == 1
+    (applied,) = kube.applied("Secret")
+    assert applied.obj["stringData"] == {}
+    assert kube.has("Secret", secret_name(entry_id, 1))
+    with pytest.raises(store.NothingToRotate):
+        await rotate(pool, kube, entry_id, values={})
+    with pytest.raises(store.NothingToRotate):
+        await rotate(pool, kube, entry_id, values={"URL": SecretStr("x")})
+    assert len(kube.applies) == 1
+    assert [v["version"] for v in await versions(pool, entry_id)] == [1]
+
+
+@pytest.mark.parametrize(
+    "over",
+    [{"name": "a\x00b"}, {"description": "d\x00"}, {"labels": ["a\x00b"]}],
+)
+async def test_nul_in_name_description_or_label_is_a_value_error(pool, over):
+    kube = FakeKube()
+    args = {"name": NAME, "description": "a key", "labels": []} | over
+    with pytest.raises(ValueError):
+        await store.create_entry(
+            pool,
+            kube,
+            NS,
+            "user",
+            envs=[protected()],
+            max_value_bytes=MAX,
+            **args,
+        )
+    assert kube.calls == []
+    entry_id = await create(pool, kube)
+    with pytest.raises(ValueError):
+        await store.update_entry(pool, "user", entry_id=entry_id, **over)
+
+
+async def test_env_names_may_repeat_across_entries(pool):
+    kube = FakeKube()
+    one = await create(pool, kube, name="GitHub infra", envs=[protected("GITHUB_TOKEN", "a")])
+    two = await create(pool, kube, name="GitHub lerobot", envs=[protected("GITHUB_TOKEN", "b")])
+    assert one != two
+    assert [e["name"] for e in await store.list_entries(pool)] == ["GitHub infra", "GitHub lerobot"]
+
+
+@pytest.mark.parametrize(
+    "envs",
+    [
+        [],
+        [protected(f"E{i}", "v") for i in range(21)],
+        [protected("lower", "v")],
+        [protected("A" * 129, "v")],
+        [protected("DUP", "v"), readable("DUP", "w")],
+        [readable("BIG", "x" * 4097)],
+        [readable("NUL", "a\x00b")],
+    ],
+)
+async def test_bad_env_sets_are_refused_before_any_row_or_kube_call(pool, envs):
+    kube = FakeKube()
+    with pytest.raises(ValueError):
+        await create(pool, kube, envs=envs)
+    assert kube.calls == []
+    assert await rows(pool, "SELECT 1 FROM entries") == []
+
+
+async def test_twenty_envs_and_a_4096_byte_readable_value_are_allowed(pool):
+    kube = FakeKube()
+    envs = [readable("BIG", "é" * 2048)] + [protected(f"E{i}", "v") for i in range(19)]
+    entry_id = await create(pool, kube, envs=envs)
+    assert len((await store.get_entry(pool, entry_id))["envs"]) == 20
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 121])
+async def test_bad_names_are_refused(pool, name):
+    with pytest.raises(ValueError):
+        await create(pool, FakeKube(), name=name)
+
+
+async def test_name_is_trimmed_free_text(pool):
+    kube = FakeKube()
+    entry_id = await create(pool, kube, name="  Harbor admin: prod (eu-1)  ")
+    assert (await store.get_entry(pool, entry_id))["name"] == "Harbor admin: prod (eu-1)"
+    await create(pool, kube, name="x" * 120)
+
+
+async def test_duplicate_live_name_is_taken_case_insensitively(pool):
     kube = FakeKube()
     await create(pool, kube)
     with pytest.raises(store.NameTaken):
         await create(pool, kube)
+    with pytest.raises(store.NameTaken):
+        await create(pool, kube, name=" API KEY ")
+    assert len(kube.applies) == 1
 
 
 async def test_recreate_after_delete_gets_a_new_uuid_and_version_one(pool):
     kube = FakeKube()
     first = await create(pool, kube)
-    await store.delete_entry(pool, "user", name="API_KEY")
+    await store.delete_entry(pool, "user", entry_id=first)
     second = await create(pool, kube)
     assert second != first
-    entry = await store.get_entry(pool, "API_KEY")
-    assert entry["id"] == second
+    assert await store.get_entry(pool, first) is None
+    entry = await store.get_entry(pool, second)
     assert entry["current_version"] == 1
 
 
-async def test_size_is_checked_in_utf8_bytes_before_any_row_or_kube_call(pool):
+async def test_size_is_the_sum_of_protected_utf8_bytes_checked_before_any_row_or_kube_call(
+    pool,
+):
     kube = FakeKube()
     with pytest.raises(store.SecretTooLarge):
         await create(pool, kube, value="x" * (MAX + 1))
     # 513 two-byte characters: 1026 bytes, over the cap although only 513 characters
     with pytest.raises(store.SecretTooLarge):
-        await create(pool, kube, value="\u00e9" * 513)
+        await create(pool, kube, value="é" * 513)
+    # two protected envs that fit alone but not together
+    half = "x" * (MAX // 2 + 1)
+    with pytest.raises(store.SecretTooLarge):
+        await create(pool, kube, envs=[protected("A", half), protected("B", half)])
     assert kube.calls == []
     assert await rows(pool, "SELECT 1 FROM entries") == []
-    # exactly the cap passes, multi-byte characters included
-    await create(pool, kube, value="\u00e9" * 512)
+    # exactly the cap passes, multi-byte characters included; readable bytes do not count
+    await create(pool, kube, envs=[protected("A", "é" * 512), readable("URL", "y" * 4096)])
     assert len(kube.applies) == 1
 
 
@@ -104,7 +256,7 @@ async def test_value_with_whitespace_is_stored_unchanged(pool):
     kube = FakeKube()
     value = f" {canary}\n"
     await create(pool, kube, value=value)
-    assert kube.applies[0].obj["stringData"] == {"value": value}
+    assert kube.applies[0].obj["stringData"] == {"API_KEY": value}
 
 
 async def test_create_failure_soft_deletes_the_entry(pool, caplog, monkeypatch):
@@ -124,7 +276,7 @@ async def test_create_failure_soft_deletes_the_entry(pool, caplog, monkeypatch):
     (v,) = await versions(pool, entry["id"])
     assert v["state"] == "retired"
     assert v["deleted_at"] is not None
-    assert await store.get_entry(pool, "API_KEY") is None
+    assert await store.get_entry(pool, fixed) is None
     assert canary not in caplog.text
     assert "KubeError" in caplog.text
     await create(pool, kube)  # the name is free again
@@ -133,18 +285,41 @@ async def test_create_failure_soft_deletes_the_entry(pool, caplog, monkeypatch):
 async def test_rotate_makes_version_two_current(pool):
     kube = FakeKube()
     entry_id = await create(pool, kube)
-    assert await rotate(pool, kube, value="new") == 2
+    assert await rotate(pool, kube, entry_id, value="new") == 2
     v1, v2 = await versions(pool, entry_id)
     assert (v1["state"], v1["retired_at"] is not None) == ("retired", True)
     assert v2["state"] == "live"
-    assert (await store.get_entry(pool, "API_KEY"))["current_version"] == 2
-    kinds = [e["kind"] for e in await store.list_events(pool, "API_KEY")]
-    assert kinds == ["entry_rotated", "entry_created"]
+    assert (await store.get_entry(pool, entry_id))["current_version"] == 2
+    events = await store.list_events(pool, entry_id)
+    assert [e["kind"] for e in events] == ["entry_rotated", "entry_created"]
+    assert events[0]["data"] == {"name": NAME, "version": 2, "envs": ["API_KEY"]}
+
+
+async def test_rotate_takes_exactly_the_protected_set(pool):
+    kube = FakeKube()
+    envs = [protected("USER", "u"), protected("PASS", "p"), readable("URL", "https://x")]
+    entry_id = await create(pool, kube, envs=envs)
+    for values, missing, extra in [
+        ({"USER": "u2"}, ["PASS"], []),
+        ({"USER": "u2", "PASS": "p2", "OTHER": "o"}, [], ["OTHER"]),
+        ({"USER": "u2", "PASS": "p2", "URL": "y"}, [], ["URL"]),
+        ({}, ["PASS", "USER"], []),
+    ]:
+        with pytest.raises(store.EnvsMismatch) as exc:
+            await rotate(pool, kube, entry_id, values={k: SecretStr(v) for k, v in values.items()})
+        assert (exc.value.missing, exc.value.extra) == (missing, extra)
+    assert len(kube.applies) == 1
+    assert [v["version"] for v in await versions(pool, entry_id)] == [1]
+    version = await rotate(
+        pool, kube, entry_id, values={"PASS": SecretStr(canary), "USER": SecretStr("u2")}
+    )
+    assert version == 2
+    assert kube.applies[-1].obj["stringData"] == {"PASS": canary, "USER": "u2"}
 
 
 async def test_rotate_unknown_entry(pool):
     with pytest.raises(store.EntryNotFound):
-        await rotate(pool, FakeKube(), name="NOPE")
+        await rotate(pool, FakeKube(), uuid.uuid4())
 
 
 async def test_rotate_failure_keeps_version_one_current(pool, caplog):
@@ -153,12 +328,12 @@ async def test_rotate_failure_keeps_version_one_current(pool, caplog):
     entry_id = await create(pool, kube)
     kube.fail("Secret", secret_name(entry_id, 2), KubeError(f"500: body {canary}"), verbs=["patch"])
     with pytest.raises(store.SecretStoreFailed) as exc:
-        await rotate(pool, kube, value=canary)
+        await rotate(pool, kube, entry_id, value=canary)
     assert canary not in str(exc.value)
     v1, v2 = await versions(pool, entry_id)
     assert v1["state"] == "live"
     assert (v2["state"], v2["deleted_at"] is not None) == ("retired", True)
-    assert (await store.get_entry(pool, "API_KEY"))["current_version"] == 1
+    assert (await store.get_entry(pool, entry_id))["current_version"] == 1
     assert canary not in caplog.text
 
 
@@ -167,44 +342,116 @@ async def test_concurrent_rotates_leave_one_live_version(pool):
     entry_id = await create(pool, kube)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[secret_name(entry_id, 2)] = (entered, release)
-    first = asyncio.create_task(rotate(pool, kube, value="one"))
+    first = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
     await entered.wait()  # version 2 is `writing`, its Secret not yet applied
-    assert await rotate(pool, kube, value="two") == 3
+    assert await rotate(pool, kube, entry_id, value="two") == 3
     release.set()
     assert await first == 2
     vs = await versions(pool, entry_id)
     assert [v["version"] for v in vs] == [1, 2, 3]
     assert [v["version"] for v in vs if v["state"] == "live"] == [3]
-    assert (await store.get_entry(pool, "API_KEY"))["current_version"] == 3
+    assert (await store.get_entry(pool, entry_id))["current_version"] == 3
 
 
 async def test_update_normalises_labels_and_records_before_after(pool):
     kube = FakeKube()
-    await create(pool, kube, labels=["old"])
-    before, after = await store.update_entry(
-        pool, "user", name="API_KEY", description="new text", labels=[" A ", "a"]
+    entry_id = await create(pool, kube, labels=["old"])
+    await store.update_entry(
+        pool, "user", entry_id=entry_id, description="new text", labels=[" A ", "a"]
     )
-    assert (before, after) == (["old"], ["a"])
-    entry = await store.get_entry(pool, "API_KEY")
+    entry = await store.get_entry(pool, entry_id)
     assert entry["labels"] == ["a"]
     assert entry["description"] == "new text"
-    event = (await store.list_events(pool, "API_KEY"))[0]
+    event = (await store.list_events(pool, entry_id))[0]
     assert event["kind"] == "entry_updated"
     assert event["data"] == {
-        "name": "API_KEY",
+        "name": NAME,
+        "name_before": NAME,
         "description_changed": True,
         "labels_before": ["old"],
         "labels_after": ["a"],
     }
 
 
+async def test_rename_is_free_and_case_insensitively_unique(pool):
+    kube = FakeKube()
+    entry_id = await create(pool, kube)
+    other = await create(pool, kube, name="Other key")
+    await store.update_entry(pool, "user", entry_id=entry_id, name="  Renamed key ")
+    entry = await store.get_entry(pool, entry_id)
+    assert entry["name"] == "Renamed key"
+    assert entry["current_version"] == 1  # a rename is no new version
+    event = (await store.list_events(pool, entry_id))[0]
+    assert (event["entry_name"], event["data"]["name"], event["data"]["name_before"]) == (
+        "Renamed key",
+        "Renamed key",
+        NAME,
+    )
+    with pytest.raises(store.NameTaken):
+        await store.update_entry(pool, "user", entry_id=other, name="RENAMED KEY")
+    assert (await store.get_entry(pool, other))["name"] == "Other key"
+    # a case-only rename of itself is fine
+    await store.update_entry(pool, "user", entry_id=entry_id, name="renamed KEY")
+    # the events of an entry follow its id across renames
+    assert len(await store.list_events(pool, entry_id)) == 3
+
+
+async def test_readable_values_edit_in_place_without_a_version(pool):
+    kube = FakeKube()
+    envs = [protected("PASS", canary), readable("URL", "https://old"), readable("USER", "u")]
+    entry_id = await create(pool, kube, envs=envs)
+    before = {e["env"]: e for e in (await store.get_entry(pool, entry_id))["envs"]}
+    await store.update_entry(
+        pool, "user", entry_id=entry_id, envs={"URL": SecretStr("https://new")}
+    )
+    entry = await store.get_entry(pool, entry_id)
+    after = {e["env"]: e for e in entry["envs"]}
+    assert after["URL"]["value"] == "https://new"
+    assert after["URL"]["updated_at"] > before["URL"]["updated_at"]
+    assert after["USER"]["updated_at"] == before["USER"]["updated_at"]
+    assert entry["current_version"] == 1
+    assert len(kube.applies) == 1
+    (event,) = [e for e in await store.list_events(pool, entry_id) if e["kind"] != "entry_created"]
+    assert event["kind"] == "entry_envs_updated"
+    assert event["data"] == {"name": NAME, "envs": ["URL"]}
+    assert "https" not in str(event)
+
+
+async def test_editing_a_protected_or_unknown_env_is_refused_whole(pool):
+    kube = FakeKube()
+    envs = [protected("PASS", "p"), readable("URL", "https://old")]
+    entry_id = await create(pool, kube, envs=envs)
+    with pytest.raises(store.EnvProtected) as exc:
+        await store.update_entry(
+            pool,
+            "user",
+            entry_id=entry_id,
+            description="changed",
+            envs={"URL": SecretStr("https://new"), "PASS": SecretStr(canary)},
+        )
+    assert exc.value.envs == ["PASS"]
+    with pytest.raises(store.EnvUnknown) as exc2:
+        await store.update_entry(pool, "user", entry_id=entry_id, envs={"NOPE": SecretStr("x")})
+    assert exc2.value.envs == ["NOPE"]
+    with pytest.raises(ValueError):
+        await store.update_entry(
+            pool, "user", entry_id=entry_id, envs={"URL": SecretStr("x" * 4097)}
+        )
+    entry = await store.get_entry(pool, entry_id)
+    assert entry["description"] == "a key"
+    assert [e["value"] for e in entry["envs"]] == [None, "https://old"]
+    assert [e["kind"] for e in await store.list_events(pool, entry_id)] == ["entry_created"]
+
+
 async def test_update_rejects_bad_labels(pool):
     kube = FakeKube()
-    await create(pool, kube)
+    entry_id = await create(pool, kube)
     with pytest.raises(ValueError):
-        await store.update_entry(pool, "user", name="API_KEY", labels=["project:bad_slug"])
+        await store.update_entry(pool, "user", entry_id=entry_id, labels=["project:bad_slug"])
     with pytest.raises(ValueError):
-        await store.update_entry(pool, "user", name="API_KEY", labels=[f"l{i}" for i in range(21)])
+        await store.update_entry(
+            pool, "user", entry_id=entry_id, labels=[f"l{i}" for i in range(21)]
+        )
     with pytest.raises(ValueError):
         await create(pool, kube, name="OTHER", labels=["project:bad_slug"])
 
@@ -212,47 +459,47 @@ async def test_update_rejects_bad_labels(pool):
 async def test_delete_soft_deletes_and_retires_the_live_version(pool):
     kube = FakeKube()
     entry_id = await create(pool, kube)
-    await store.delete_entry(pool, "user", name="API_KEY")
-    assert await store.get_entry(pool, "API_KEY") is None
+    await store.delete_entry(pool, "user", entry_id=entry_id)
+    assert await store.get_entry(pool, entry_id) is None
     assert await store.list_entries(pool) == []
     (v,) = await versions(pool, entry_id)
     assert v["state"] == "retired"
     assert v["retired_at"] is not None
     assert v["deleted_at"] is None  # the sweeper deletes the Secret once no pin holds it
     with pytest.raises(store.EntryNotFound):
-        await store.delete_entry(pool, "user", name="API_KEY")
-    assert (await store.list_events(pool, "API_KEY"))[0]["kind"] == "entry_deleted"
+        await store.delete_entry(pool, "user", entry_id=entry_id)
+    assert (await store.list_events(pool, entry_id))[0]["kind"] == "entry_deleted"
 
 
 async def test_list_entries_filters(pool):
     kube = FakeKube()
-    await create(pool, kube, name="B_KEY", labels=["alpha"])
+    await create(pool, kube, name="b key", labels=["alpha"])
     await create(pool, kube, name="A_KEY", labels=["beta", "gamma"])
     await create(pool, kube, name="C_PCT", labels=[])
-    assert [e["name"] for e in await store.list_entries(pool)] == ["A_KEY", "B_KEY", "C_PCT"]
-    assert [e["name"] for e in await store.list_entries(pool, q="b_k")] == ["B_KEY"]
+    assert [e["name"] for e in await store.list_entries(pool)] == ["A_KEY", "b key", "C_PCT"]
+    assert [e["name"] for e in await store.list_entries(pool, q="B K")] == ["b key"]
     assert [e["name"] for e in await store.list_entries(pool, q="GAMM")] == ["A_KEY"]
-    assert [e["name"] for e in await store.list_entries(pool, q="_")] == [
-        "A_KEY",
-        "B_KEY",
-        "C_PCT",
-    ]
+    assert [e["name"] for e in await store.list_entries(pool, q="_")] == ["A_KEY", "C_PCT"]
     assert await store.list_entries(pool, q="%") == []
     assert await store.list_entries(pool, q="\\") == []
     got = await store.list_entries(pool, labels=["alpha", "beta"])
-    assert [e["name"] for e in got] == ["A_KEY", "B_KEY"]
+    assert [e["name"] for e in got] == ["A_KEY", "b key"]
+    assert [e["name"] for e in await store.list_entries(pool, name="B KEY")] == ["b key"]
+    assert await store.list_entries(pool, name="b ke") == []
+    assert [e["env"] for e in (await store.list_entries(pool))[0]["envs"]] == ["API_KEY"]
 
 
 async def test_versions_pins_and_behind_count(pool):
     kube = FakeKube()
     entry_id = await create(pool, kube)
-    await rotate(pool, kube)
+    await rotate(pool, kube, entry_id)
     session = uuid.uuid4()
     other = uuid.uuid4()
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO pins (session_id, env, entry_id, version) VALUES"
-            " (%s, 'A', %s, 1), (%s, 'B', %s, 1), (%s, 'A', %s, 2)",
+            "INSERT INTO pins (session_id, env, entry_id, entry_env, version) VALUES"
+            " (%s, 'A', %s, 'API_KEY', 1), (%s, 'B', %s, 'API_KEY', 1),"
+            " (%s, 'A', %s, 'API_KEY', 2)",
             (session, entry_id, session, entry_id, other, entry_id),
         )
     vs = await store.entry_versions(pool, entry_id)
@@ -263,24 +510,32 @@ async def test_versions_pins_and_behind_count(pool):
 
 async def test_list_events_pages_newest_first(pool):
     kube = FakeKube()
-    await create(pool, kube)
-    await rotate(pool, kube)
-    await rotate(pool, kube)
-    events = await store.list_events(pool, "API_KEY", limit=2)
+    entry_id = await create(pool, kube)
+    await rotate(pool, kube, entry_id)
+    await rotate(pool, kube, entry_id)
+    events = await store.list_events(pool, entry_id, limit=2)
     assert [e["kind"] for e in events] == ["entry_rotated", "entry_rotated"]
-    older = await store.list_events(pool, "API_KEY", before_id=events[-1]["id"])
+    older = await store.list_events(pool, entry_id, before_id=events[-1]["id"])
     assert [e["kind"] for e in older] == ["entry_created"]
 
 
-async def test_the_value_is_in_no_row(pool):
+async def test_the_protected_value_is_in_no_row(pool):
     kube = FakeKube()
-    await create(pool, kube, value=canary)
-    await rotate(pool, kube, value=canary)
-    await store.update_entry(pool, "user", name="API_KEY", description="d")
-    await store.delete_entry(pool, "user", name="API_KEY")
-    for table in ("entries", "versions", "pins", "events"):
+    envs = [protected("API_KEY", canary), readable("URL", "https://visible")]
+    entry_id = await create(pool, kube, envs=envs)
+    await rotate(pool, kube, entry_id, value=canary)
+    await store.update_entry(
+        pool, "user", entry_id=entry_id, description="d", envs={"URL": SecretStr("https://v2")}
+    )
+    await store.delete_entry(pool, "user", entry_id=entry_id)
+    found_readable = False
+    for table in ("entries", "entry_envs", "versions", "pins", "events"):
         found = await rows(pool, f"SELECT row_to_json(t)::text AS j FROM {table} t")  # noqa: S608
         assert all(canary not in r["j"] for r in found), table
+        found_readable |= any("https://v2" in r["j"] for r in found)
+        if table == "events":
+            assert all("https://" not in r["j"] for r in found)
+    assert found_readable  # the readable value is in Postgres, the protected one is not
 
 
 async def reap(pool, entry_id, version):
@@ -299,14 +554,14 @@ async def test_rotate_reaped_while_writing_deletes_the_secret(pool):
     name = secret_name(entry_id, 2)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[name] = (entered, release)
-    task = asyncio.create_task(rotate(pool, kube, value="one"))
+    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
     await entered.wait()
     await reap(pool, entry_id, 2)
     release.set()
     with pytest.raises(store.SecretStoreFailed):
         await task
     assert not kube.has("Secret", name)  # our apply landed after the reap: we delete it
-    assert (await store.get_entry(pool, "API_KEY"))["current_version"] == 1
+    assert (await store.get_entry(pool, entry_id))["current_version"] == 1
 
 
 async def test_create_reaped_while_writing_deletes_the_secret(pool, monkeypatch):
@@ -323,7 +578,7 @@ async def test_create_reaped_while_writing_deletes_the_secret(pool, monkeypatch)
     with pytest.raises(store.SecretStoreFailed):
         await task
     assert not kube.has("Secret", name)
-    assert await store.get_entry(pool, "API_KEY") is None
+    assert await store.get_entry(pool, fixed) is None
 
 
 async def test_create_apply_landed_and_cleanup_failed_keeps_the_row_for_gc(pool):
@@ -358,7 +613,7 @@ async def test_rotate_apply_landed_and_cleanup_failed_keeps_the_row_for_gc(pool)
 
     kube.apply = apply_then_block
     with pytest.raises(store.SecretStoreFailed):
-        await rotate(pool, kube, value="new")
+        await rotate(pool, kube, entry_id, value="new")
     v1, v2 = await versions(pool, entry_id)
     assert v1["state"] == "live"
     assert (v2["state"], v2["deleted_at"]) == ("retired", None)
@@ -370,7 +625,7 @@ async def test_rotate_failure_with_clean_delete_still_stamps_the_row(pool):
     entry_id = await create(pool, kube)
     kube.land_then_fail = True
     with pytest.raises(store.SecretStoreFailed):
-        await rotate(pool, kube, value="new")
+        await rotate(pool, kube, entry_id, value="new")
     _v1, v2 = await versions(pool, entry_id)
     assert v2["deleted_at"] is not None
     assert not kube.has("Secret", secret_name(entry_id, 2))
@@ -382,7 +637,7 @@ async def test_rotate_reaped_and_post_delete_failed_leaves_row_for_gc(pool):
     name = secret_name(entry_id, 2)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[name] = (entered, release)
-    task = asyncio.create_task(rotate(pool, kube, value="one"))
+    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
     await entered.wait()
     await reap(pool, entry_id, 2)
     kube.block_delete = True
@@ -411,4 +666,4 @@ async def test_create_reaped_and_post_delete_failed_leaves_row_for_gc(pool, monk
     assert kube.has("Secret", name)
     (v,) = await versions(pool, fixed)
     assert (v["state"], v["deleted_at"]) == ("retired", None)
-    assert await store.get_entry(pool, "API_KEY") is None
+    assert await store.get_entry(pool, fixed) is None

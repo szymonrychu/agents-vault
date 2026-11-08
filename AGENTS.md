@@ -14,5 +14,5 @@ Run `mise run test`, `mise run lint` and `mise run fmt` from this directory.
 
 ## Hard rules
 
-- A secret value is held only as a `SecretStr` until it goes into a Kubernetes Secret. It is never logged, returned, stored in Postgres or put into an event or an error text. No hash or length of a value is stored either.
+- A protected env value is held only as a `SecretStr` until it goes into a Kubernetes Secret. It is never logged, returned, stored in Postgres or put into an event or an error text. No hash or length of a value is stored either. Readable env values are stored in `entry_envs.value` and shown in views, but never put into an event or a log line.
 - RBAC on `secrets` is `create`, `patch`, `delete` only: code never reads or lists a Secret.

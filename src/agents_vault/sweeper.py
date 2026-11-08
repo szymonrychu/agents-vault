@@ -107,6 +107,7 @@ async def _release_pins(
                         "pins_released",
                         ACTOR,
                         None,
+                        None,
                         {"session_id": str(session_id), "reason": "reconcile"},
                     )
             if changed:
@@ -159,6 +160,7 @@ async def _collect_versions(
                     conn,
                     "version_deleted",
                     ACTOR,
+                    entry_id,
                     entry["name"],
                     {"name": entry["name"], "version": version},
                 )
@@ -201,6 +203,7 @@ async def _reap_writing(
                     conn,
                     "writing_reaped",
                     ACTOR,
+                    entry_id,
                     entry["name"],
                     {"name": entry["name"], "version": version},
                 )
@@ -237,6 +240,7 @@ async def _purge(pool: AsyncConnectionPool, report: SweepReport) -> None:
                     continue
                 await conn.execute("DELETE FROM pins WHERE entry_id = %s", (entry_id,))
                 await conn.execute("DELETE FROM versions WHERE entry_id = %s", (entry_id,))
+                await conn.execute("DELETE FROM entry_envs WHERE entry_id = %s", (entry_id,))
                 await conn.execute("DELETE FROM entries WHERE id = %s", (entry_id,))
             report.entries_purged += 1
         except Exception as exc:
