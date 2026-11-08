@@ -104,8 +104,23 @@ async def test_zero_protected_entry_is_allowed(web_client, kube):
     assert r.status_code == 201
     assert kube.applied("Secret")[0].obj["stringData"] == {}
     rot = await web_client.put(f"{E}/{r.json()['id']}/value", json={"values": {}})
-    assert rot.status_code == 200
-    assert rot.json()["version"] == 2
+    assert rot.status_code == 422
+    assert rot.json()["error"]["code"] == "vault_nothing_to_rotate"
+    assert len(kube.applied("Secret")) == 1
+    assert (await web_client.get(f"{E}/{r.json()['id']}")).json()["version"] == 1
+
+
+@pytest.mark.parametrize(
+    "over", [{"name": "a\x00b"}, {"description": "d\x00"}, {"labels": ["a\x00b"]}]
+)
+async def test_nul_in_name_description_or_label_is_422(web_client, over):
+    r = await create(web_client, **over)
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "invalid_request"
+    entry_id = await make(web_client)
+    patched = await web_client.patch(f"{E}/{entry_id}", json=over)
+    assert patched.status_code == 422
+    assert patched.json()["error"]["code"] == "invalid_request"
 
 
 async def test_same_env_name_in_two_entries(web_client):

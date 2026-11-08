@@ -55,6 +55,8 @@ def _mapped() -> Iterator[None]:
         raise ApiError(
             422, "vault_envs_mismatch", str(exc), {"missing": exc.missing, "extra": exc.extra}
         ) from None
+    except store.NothingToRotate as exc:
+        raise ApiError(422, "vault_nothing_to_rotate", str(exc)) from None
     except store.EnvProtected as exc:
         raise ApiError(422, "vault_env_protected", str(exc), {"envs": exc.envs}) from None
     except store.EnvUnknown as exc:

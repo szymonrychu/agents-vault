@@ -662,7 +662,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "List Entries"
@@ -728,7 +728,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "502": {
             "content": {
@@ -801,7 +801,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "503": {
             "content": {
@@ -869,7 +869,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Get Entry"
@@ -947,7 +947,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Patch Entry"
@@ -1011,7 +1011,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Entry Pins"
@@ -1091,7 +1091,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           },
           "502": {
             "content": {
@@ -1190,7 +1190,7 @@
                 }
               }
             },
-            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+            "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
           }
         },
         "summary": "Events"

@@ -132,8 +132,35 @@ async def test_zero_protected_entry_still_writes_an_empty_secret(pool):
     (applied,) = kube.applied("Secret")
     assert applied.obj["stringData"] == {}
     assert kube.has("Secret", secret_name(entry_id, 1))
-    assert await rotate(pool, kube, entry_id, values={}) == 2
-    assert kube.applied("Secret")[1].obj["stringData"] == {}
+    with pytest.raises(store.NothingToRotate):
+        await rotate(pool, kube, entry_id, values={})
+    with pytest.raises(store.NothingToRotate):
+        await rotate(pool, kube, entry_id, values={"URL": SecretStr("x")})
+    assert len(kube.applies) == 1
+    assert [v["version"] for v in await versions(pool, entry_id)] == [1]
+
+
+@pytest.mark.parametrize(
+    "over",
+    [{"name": "a\x00b"}, {"description": "d\x00"}, {"labels": ["a\x00b"]}],
+)
+async def test_nul_in_name_description_or_label_is_a_value_error(pool, over):
+    kube = FakeKube()
+    args = {"name": NAME, "description": "a key", "labels": []} | over
+    with pytest.raises(ValueError):
+        await store.create_entry(
+            pool,
+            kube,
+            NS,
+            "user",
+            envs=[protected()],
+            max_value_bytes=MAX,
+            **args,
+        )
+    assert kube.calls == []
+    entry_id = await create(pool, kube)
+    with pytest.raises(ValueError):
+        await store.update_entry(pool, "user", entry_id=entry_id, **over)
 
 
 async def test_env_names_may_repeat_across_entries(pool):

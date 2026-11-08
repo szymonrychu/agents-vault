@@ -69,6 +69,11 @@ class EnvsMismatch(StoreError):
         self.extra = extra
 
 
+class NothingToRotate(StoreError):
+    """The entry has no protected env, so a rotate has nothing to write (422
+    `vault_nothing_to_rotate`)."""
+
+
 class EnvProtected(StoreError):
     """An edit named a protected env; its value changes only by rotate (422)."""
 
@@ -110,10 +115,17 @@ def clean_labels(raw: list[str]) -> list[str]:
 
 def clean_name(name: str) -> str:
     """The trimmed free-text name, 1..NAME_MAX characters."""
-    name = name.strip()
+    name = _no_nul(name.strip(), "a name")
     if not 1 <= len(name) <= NAME_MAX:
         raise ValueError(f"name must be 1 to {NAME_MAX} characters after trimming")
     return name
+
+
+def _no_nul(text: str, what: str) -> str:
+    """Postgres text cannot hold a NUL character: refuse it as a 422, never a 500."""
+    if "\x00" in text:
+        raise ValueError(f"{what} must not contain a NUL character")
+    return text
 
 
 def _protected_bytes(values: Mapping[str, SecretStr]) -> int:
@@ -125,9 +137,7 @@ def _readable(value: str) -> str:
     The message never carries the value."""
     if len(value.encode()) > READABLE_MAX_BYTES:
         raise ValueError(f"a readable env value must be at most {READABLE_MAX_BYTES} bytes")
-    if "\x00" in value:
-        raise ValueError("a readable env value must not contain a NUL character")
-    return value
+    return _no_nul(value, "a readable env value")
 
 
 def _clean_envs(envs: list[EnvIn]) -> list[EnvIn]:
@@ -146,6 +156,7 @@ def _clean_envs(envs: list[EnvIn]) -> list[EnvIn]:
 
 
 def _clean_description(description: str) -> str:
+    _no_nul(description, "a description")
     if not description.strip() or len(description) > DESCRIPTION_MAX:
         raise ValueError(f"description must be 1 to {DESCRIPTION_MAX} characters")
     return description
@@ -294,6 +305,8 @@ async def rotate_entry(
         if entry is None:
             raise EntryNotFound("no such entry")
         wanted = {r["env"] for r in await repo.envs_of(conn, [entry_id]) if r["protected"]}
+        if not wanted:
+            raise NothingToRotate("the entry has no protected env to rotate")
         if set(values) != wanted:
             raise EnvsMismatch(sorted(wanted - set(values)), sorted(set(values) - wanted))
         version = await repo.next_version(conn, entry_id)
