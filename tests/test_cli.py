@@ -48,7 +48,7 @@ def test_no_command_exits_2(capsys):
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize("command", ["migrate", "serve-web", "serve-service"])
+@pytest.mark.parametrize("command", ["migrate", "serve-web", "serve-service", "sweeper"])
 def test_bad_config_exits_78_naming_variables(command, capsys):
     assert main([command]) == EXIT_CONFIG
     err = capsys.readouterr().err

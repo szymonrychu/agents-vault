@@ -61,3 +61,29 @@ async def release_session(conn: psycopg.AsyncConnection, session_id: UUID) -> in
         (session_id,),
     )
     return cur.rowcount
+
+
+async def stale_unlisted_sessions(
+    conn: psycopg.AsyncConnection, live_ids: list[UUID], grace_seconds: int
+) -> list[UUID]:
+    """Sessions with a live pin older than the grace (the vault's own clock) that the
+    orchestrator did not list."""
+    cur = await conn.execute(
+        "SELECT DISTINCT session_id FROM pins WHERE released_at IS NULL"
+        " AND created_at < now() - make_interval(secs => %s)"
+        " AND NOT (session_id = ANY(%s::uuid[]))",
+        (grace_seconds, live_ids),
+    )
+    return [row[0] for row in await cur.fetchall()]
+
+
+async def release_stale_session(
+    conn: psycopg.AsyncConnection, session_id: UUID, grace_seconds: int
+) -> int:
+    """Release the session's live pins older than the grace; returns how many changed."""
+    cur = await conn.execute(
+        "UPDATE pins SET released_at = now() WHERE session_id = %s AND released_at IS NULL"
+        " AND created_at < now() - make_interval(secs => %s)",
+        (session_id, grace_seconds),
+    )
+    return cur.rowcount

@@ -75,6 +75,12 @@ def _migrate(settings: Settings) -> int:
     return 0
 
 
+def _sweeper(settings: Settings) -> int:
+    from agents_vault.sweeper import main as run
+
+    return run(settings)
+
+
 def _serve_web(settings: Settings) -> int:
     from agents_vault import runtime
 
@@ -113,6 +119,7 @@ def _serve_service(settings: Settings) -> int:
 register("migrate", _configured(_migrate), "apply the schema migrations and exit")
 register("serve-web", _configured(_serve_web), "serve the user-facing http api")
 register("serve-service", _configured(_serve_service), "serve the orchestrator-facing http api")
+register("sweeper", _configured(_sweeper), "release pins, collect versions, reap stale writes")
 
 
 if __name__ == "__main__":
