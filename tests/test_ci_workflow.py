@@ -20,13 +20,15 @@ def steps_text(job: str) -> str:
 
 
 def test_workflow_jobs_and_targets():
-    for job in ("lint", "test", "images", "chart-publish", "release"):
+    for job in ("lint", "test", "chart", "images", "chart-publish", "release"):
         assert job in JOBS
     on = WF.get("on", WF.get(True))
     assert "pull_request" in on
     assert on["push"]["branches"] == ["main"]
     assert "mise run lint" in steps_text("lint")
     assert "mise run test" in steps_text("test")
+    chart = steps_text("chart")
+    assert "mise run lint:chart" in chart and "mise run test:chart" in chart
     assert "e2e" not in JOBS
     images = steps_text("images")
     assert "docker build" in images and "docker run --rm agents-vault:ci --help" in images
@@ -41,7 +43,7 @@ def test_workflow_jobs_and_targets():
     assert "chart/agents-vault" in steps_text("chart-publish")
     assert "chart-version.sh branch" in steps_text("chart-publish")
     assert "secrets." not in str({k: v for k, v in WF.items() if k != "jobs"})
-    for name in ("lint", "test"):
+    for name in ("lint", "test", "chart"):
         assert "secrets." not in steps_text(name)
 
 
@@ -125,7 +127,7 @@ def test_release_job_runs_last_on_main_push():
     job = JOBS["release"]
     assert job["if"] == MAIN
     assert set(job["needs"]) == set(JOBS) - {"release"}
-    assert set(job["needs"]) == {"lint", "test", "images", "chart-publish"}
+    assert set(job["needs"]) == {"lint", "test", "chart", "images", "chart-publish"}
     assert job["permissions"] == {"contents": "write"}
     assert job["concurrency"] == {"group": "release", "cancel-in-progress": False}
 

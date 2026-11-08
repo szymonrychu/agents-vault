@@ -21,6 +21,14 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: mise run test
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run lint:chart
+      - run: mise run test:chart
+
   images:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -57,7 +65,7 @@ jobs:
           regctl image import "$IMAGE:$SHORTSHA" image.tar
 
   chart-publish:
-    needs: [lint, test, images]
+    needs: [lint, test, chart, images]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
@@ -95,7 +103,7 @@ jobs:
         run: helm push "agents-vault-$VERSION.tgz" "$CHART_REPO"
 
   release:
-    needs: [lint, test, images, chart-publish]
+    needs: [lint, test, chart, images, chart-publish]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

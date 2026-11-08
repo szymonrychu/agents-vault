@@ -48,3 +48,8 @@ Lessons that outlive a session. Newest first.
 - The canary test found one real leak, fixed: a 422 for a forbidden extra field put the caller's own key (the last `loc` element) into the error message, and a caller can name a key after a value. `extra_forbidden` errors now drop that element. Other 422 messages use only fixed field names.
 - The canary is split: the refusals that happen before the store touches Postgres (422 variants, 413 on create and rotate) run on fakes with no database; the full life (create, rotate, 502 with the canary in the Kubernetes error text, pins, release, delete, sweeper passes, row scan of every table) needs Postgres and runs in CI. It also searches for the base64 forms of the canary.
 - The OpenAPI documents list the statuses per route by hand (`ROUTE_ERRORS`); a test compares the documented paths with the apps' routes, so a new route fails until it is listed.
+
+## 2026-11-08 chart (task 9)
+- `web` and `sweeper` pods mount the ServiceAccount token (they create/patch and delete Secrets through the Kubernetes API); `service` sets `automountServiceAccountToken: false` because it only reads Postgres and never talks to the API server. The ServiceAccount object itself stays non-automounting.
+- The Role grants exactly `create`, `patch`, `delete` on `secrets` in the release namespace: no get, list or watch, so a compromised vault pod cannot read any Secret back (write-only by construction). `patch` is for server-side apply.
+- `serviceListener.tokensSecret.name` is required and the Secret is external (never rendered by the chart); it is mounted only into the `service` container, as in agents-history.

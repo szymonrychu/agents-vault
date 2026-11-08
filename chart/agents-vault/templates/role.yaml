@@ -1,0 +1,16 @@
+{{- if .Values.rbac.create }}
+# web writes the Secrets that hold the entries (write-only, immutable) and the sweeper deletes
+# expired ones: create, patch (server-side apply) and delete, no get, list or watch, in the
+# release namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agents-vault.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agents-vault.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "patch", "delete"]
+{{- end }}
