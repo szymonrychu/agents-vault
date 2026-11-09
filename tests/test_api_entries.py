@@ -248,27 +248,32 @@ async def test_rotate_bumps_version(web_client, kube):
     assert kube.applied("Secret")[1].obj["stringData"] == {"GPG_KEY": "new-value"}
 
 
-async def test_rotate_must_name_exactly_the_protected_envs(web_client, kube):
+async def test_rotate_must_name_exactly_the_protected_envs(web_client, kube, caplog):
     envs = [*MIXED, {"env": "HARBOR_TOKEN", "protected": True, "value": "token-01"}]
     entry_id = await make(web_client, envs=envs)
     url = f"{E}/{entry_id}/value"
     missing = await web_client.put(url, json={"values": {"HARBOR_PASSWORD": canary}})
     assert missing.status_code == 422
     err = missing.json()["error"]
-    assert (err["code"], err["missing"], err["extra"]) == (
+    assert (err["code"], err["missing"], err["extra_count"]) == (
         "vault_envs_mismatch",
         ["HARBOR_TOKEN"],
-        [],
+        0,
     )
+    assert "extra" not in err
     extra = await web_client.put(
         url,
-        json={"values": {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "token-01", "HARBOR_URL": "u"}},
+        json={
+            "values": {
+                "HARBOR_PASSWORD": canary,
+                "HARBOR_TOKEN": "token-01",
+                "CALLER_CHOSEN_KEY": "u",
+            }
+        },
     )
     assert extra.status_code == 422
-    assert (extra.json()["error"]["missing"], extra.json()["error"]["extra"]) == (
-        [],
-        ["HARBOR_URL"],
-    )
+    assert (extra.json()["error"]["missing"], extra.json()["error"]["extra_count"]) == ([], 1)
+    assert "CALLER_CHOSEN_KEY" not in missing.text + extra.text + caplog.text
     assert canary not in missing.text + extra.text
     assert len(kube.applied("Secret")) == 1
     ok = await web_client.put(

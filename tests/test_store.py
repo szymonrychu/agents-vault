@@ -308,14 +308,14 @@ async def test_rotate_takes_exactly_the_protected_set(pool):
     ]
     entry_id = await create(pool, kube, envs=envs)
     for values, missing, extra in [
-        ({"USER": "u2"}, ["PASS"], []),
-        ({"USER": "u2", "PASS": "p2", "OTHER": "o"}, [], ["OTHER"]),
-        ({"USER": "u2", "PASS": "p2", "URL": "y"}, [], ["URL"]),
-        ({}, ["PASS", "USER"], []),
+        ({"USER": "u2"}, ["PASS"], 0),
+        ({"USER": "u2", "PASS": "p2", "OTHER": "o"}, [], 1),
+        ({"USER": "u2", "PASS": "p2", "URL": "y"}, [], 1),
+        ({}, ["PASS", "USER"], 0),
     ]:
         with pytest.raises(store.EnvsMismatch) as exc:
             await rotate(pool, kube, entry_id, values={k: SecretStr(v) for k, v in values.items()})
-        assert (exc.value.missing, exc.value.extra) == (missing, extra)
+        assert (exc.value.missing, exc.value.extra_count) == (missing, extra)
     assert len(kube.applies) == 1
     assert [v["version"] for v in await versions(pool, entry_id)] == [1]
     version = await rotate(

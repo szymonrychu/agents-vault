@@ -64,10 +64,10 @@ class SecretTooLarge(StoreError):
 class EnvsMismatch(StoreError):
     """A rotate did not supply exactly the protected env set (422 `vault_envs_mismatch`)."""
 
-    def __init__(self, missing: list[str], extra: list[str]) -> None:
+    def __init__(self, missing: list[str], extra_count: int) -> None:
         super().__init__("the values must name exactly the protected envs of the entry")
-        self.missing = missing
-        self.extra = extra
+        self.missing = missing  # the entry's own env names, from stored data
+        self.extra_count = extra_count  # a count only: caller-chosen keys are never echoed
 
 
 class NothingToRotate(StoreError):
@@ -329,7 +329,7 @@ async def rotate_entry(
         if not wanted:
             raise NothingToRotate("the entry has no protected env to rotate")
         if set(values) != wanted:
-            raise EnvsMismatch(sorted(wanted - set(values)), sorted(set(values) - wanted))
+            raise EnvsMismatch(sorted(wanted - set(values)), len(set(values) - wanted))
         _require_min_length(values)
         version = await repo.next_version(conn, entry_id)
         await repo.insert_writing(conn, entry_id, version)
