@@ -102,7 +102,7 @@ async def test_create_with_mixed_envs_keeps_order_and_splits_values(pool):
         readable("HARBOR_URL", "https://harbor.example"),
         protected("HARBOR_PASSWORD", canary),
         readable("HARBOR_USERNAME", "robot-user"),
-        protected("HARBOR_TOKEN", "tok"),
+        protected("HARBOR_TOKEN", "token-01"),
     ]
     entry_id = await create(pool, kube, name="Harbor admin credentials", envs=envs)
     entry = await store.get_entry(pool, entry_id)
@@ -113,7 +113,7 @@ async def test_create_with_mixed_envs_keeps_order_and_splits_values(pool):
         ("HARBOR_TOKEN", True, None),
     ]
     (applied,) = kube.applied("Secret")
-    assert applied.obj["stringData"] == {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "tok"}
+    assert applied.obj["stringData"] == {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "token-01"}
     (event,) = await store.list_events(pool, entry_id)
     assert event["data"]["envs"] == [
         "HARBOR_URL",
@@ -165,8 +165,12 @@ async def test_nul_in_name_description_or_label_is_a_value_error(pool, over):
 
 async def test_env_names_may_repeat_across_entries(pool):
     kube = FakeKube()
-    one = await create(pool, kube, name="GitHub infra", envs=[protected("GITHUB_TOKEN", "a")])
-    two = await create(pool, kube, name="GitHub lerobot", envs=[protected("GITHUB_TOKEN", "b")])
+    one = await create(
+        pool, kube, name="GitHub infra", envs=[protected("GITHUB_TOKEN", "value-aaa")]
+    )
+    two = await create(
+        pool, kube, name="GitHub lerobot", envs=[protected("GITHUB_TOKEN", "value-bbb")]
+    )
     assert one != two
     assert [e["name"] for e in await store.list_entries(pool)] == ["GitHub infra", "GitHub lerobot"]
 
@@ -193,7 +197,7 @@ async def test_bad_env_sets_are_refused_before_any_row_or_kube_call(pool, envs):
 
 async def test_twenty_envs_and_a_4096_byte_readable_value_are_allowed(pool):
     kube = FakeKube()
-    envs = [readable("BIG", "é" * 2048)] + [protected(f"E{i}", "v") for i in range(19)]
+    envs = [readable("BIG", "é" * 2048)] + [protected(f"E{i}", "value-001") for i in range(19)]
     entry_id = await create(pool, kube, envs=envs)
     assert len((await store.get_entry(pool, entry_id))["envs"]) == 20
 
@@ -285,7 +289,7 @@ async def test_create_failure_soft_deletes_the_entry(pool, caplog, monkeypatch):
 async def test_rotate_makes_version_two_current(pool):
     kube = FakeKube()
     entry_id = await create(pool, kube)
-    assert await rotate(pool, kube, entry_id, value="new") == 2
+    assert await rotate(pool, kube, entry_id, value="new-value") == 2
     v1, v2 = await versions(pool, entry_id)
     assert (v1["state"], v1["retired_at"] is not None) == ("retired", True)
     assert v2["state"] == "live"
@@ -297,7 +301,11 @@ async def test_rotate_makes_version_two_current(pool):
 
 async def test_rotate_takes_exactly_the_protected_set(pool):
     kube = FakeKube()
-    envs = [protected("USER", "u"), protected("PASS", "p"), readable("URL", "https://x")]
+    envs = [
+        protected("USER", "user-001"),
+        protected("PASS", "pass-001"),
+        readable("URL", "https://x"),
+    ]
     entry_id = await create(pool, kube, envs=envs)
     for values, missing, extra in [
         ({"USER": "u2"}, ["PASS"], []),
@@ -311,10 +319,10 @@ async def test_rotate_takes_exactly_the_protected_set(pool):
     assert len(kube.applies) == 1
     assert [v["version"] for v in await versions(pool, entry_id)] == [1]
     version = await rotate(
-        pool, kube, entry_id, values={"PASS": SecretStr(canary), "USER": SecretStr("u2")}
+        pool, kube, entry_id, values={"PASS": SecretStr(canary), "USER": SecretStr("user-002")}
     )
     assert version == 2
-    assert kube.applies[-1].obj["stringData"] == {"PASS": canary, "USER": "u2"}
+    assert kube.applies[-1].obj["stringData"] == {"PASS": canary, "USER": "user-002"}
 
 
 async def test_rotate_unknown_entry(pool):
@@ -342,9 +350,9 @@ async def test_concurrent_rotates_leave_one_live_version(pool):
     entry_id = await create(pool, kube)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[secret_name(entry_id, 2)] = (entered, release)
-    first = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
+    first = asyncio.create_task(rotate(pool, kube, entry_id, value="one-value"))
     await entered.wait()  # version 2 is `writing`, its Secret not yet applied
-    assert await rotate(pool, kube, entry_id, value="two") == 3
+    assert await rotate(pool, kube, entry_id, value="two-value") == 3
     release.set()
     assert await first == 2
     vs = await versions(pool, entry_id)
@@ -419,7 +427,7 @@ async def test_readable_values_edit_in_place_without_a_version(pool):
 
 async def test_editing_a_protected_or_unknown_env_is_refused_whole(pool):
     kube = FakeKube()
-    envs = [protected("PASS", "p"), readable("URL", "https://old")]
+    envs = [protected("PASS", "pass-001"), readable("URL", "https://old")]
     entry_id = await create(pool, kube, envs=envs)
     with pytest.raises(store.EnvProtected) as exc:
         await store.update_entry(
@@ -554,7 +562,7 @@ async def test_rotate_reaped_while_writing_deletes_the_secret(pool):
     name = secret_name(entry_id, 2)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[name] = (entered, release)
-    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
+    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one-value"))
     await entered.wait()
     await reap(pool, entry_id, 2)
     release.set()
@@ -613,7 +621,7 @@ async def test_rotate_apply_landed_and_cleanup_failed_keeps_the_row_for_gc(pool)
 
     kube.apply = apply_then_block
     with pytest.raises(store.SecretStoreFailed):
-        await rotate(pool, kube, entry_id, value="new")
+        await rotate(pool, kube, entry_id, value="new-value")
     v1, v2 = await versions(pool, entry_id)
     assert v1["state"] == "live"
     assert (v2["state"], v2["deleted_at"]) == ("retired", None)
@@ -625,7 +633,7 @@ async def test_rotate_failure_with_clean_delete_still_stamps_the_row(pool):
     entry_id = await create(pool, kube)
     kube.land_then_fail = True
     with pytest.raises(store.SecretStoreFailed):
-        await rotate(pool, kube, entry_id, value="new")
+        await rotate(pool, kube, entry_id, value="new-value")
     _v1, v2 = await versions(pool, entry_id)
     assert v2["deleted_at"] is not None
     assert not kube.has("Secret", secret_name(entry_id, 2))
@@ -637,7 +645,7 @@ async def test_rotate_reaped_and_post_delete_failed_leaves_row_for_gc(pool):
     name = secret_name(entry_id, 2)
     entered, release = asyncio.Event(), asyncio.Event()
     kube.apply_gate[name] = (entered, release)
-    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one"))
+    task = asyncio.create_task(rotate(pool, kube, entry_id, value="one-value"))
     await entered.wait()
     await reap(pool, entry_id, 2)
     kube.block_delete = True

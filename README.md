@@ -78,7 +78,7 @@ Query: `q` (substring of name, description or a label), `label` (repeatable). Re
 
 ### `POST /vault/v1/entries`
 
-Body `{name, description, labels, envs: [{env, protected, value}]}`. Name is free text, trimmed, 1..120 characters; no NUL character in the name, description, labels or a readable value; description 1..500 characters; 1..20 envs, each name `^[A-Z_][A-Z0-9_]{0,127}$` and unique within the entry (names may repeat across entries); a readable value is at most 4096 bytes; the protected values together are at most `VAULT_MAX_VALUE_BYTES` bytes. Creates the entry and version 1 (its Secret holds the protected envs, possibly none). Statuses: 201, 403, 409 `vault_name_taken` (case-insensitive), 413 `secret_too_large`, 422, 502 `secret_store_failed`.
+Body `{name, description, labels, envs: [{env, protected, value}]}`. Name is free text, trimmed, 1..120 characters; no NUL character in the name, description, labels or a readable value; description 1..500 characters; 1..20 envs, each name `^[A-Z_][A-Z0-9_]{0,127}$` and unique within the entry (names may repeat across entries); a readable value is at most 4096 bytes; each protected value is at least 8 characters (`422 vault_value_too_short`, naming the env only); the protected values together are at most `VAULT_MAX_VALUE_BYTES` bytes. Creates the entry and version 1 (its Secret holds the protected envs, possibly none). Statuses: 201, 403, 409 `vault_name_taken` (case-insensitive), 413 `secret_too_large`, 422, 502 `secret_store_failed`.
 
 ### `GET /vault/v1/entries/{entry_id}`
 
@@ -90,7 +90,7 @@ Body `{name?, description?, labels?, envs?: {ENV: value}}`, at least one. A labe
 
 ### `PUT /vault/v1/entries/{entry_id}/value`
 
-Body `{values: {ENV: value}}` naming exactly the protected envs of the entry (`422 vault_envs_mismatch` with `missing` and `extra` otherwise; an entry without a protected env has nothing to rotate, `422 vault_nothing_to_rotate`). Writes a new immutable version holding the whole protected set and makes it current. Statuses: 200, 403, 404, 413, 422, 502.
+Body `{values: {ENV: value}}` naming exactly the protected envs of the entry (`422 vault_envs_mismatch` with `missing` and `extra` otherwise; an entry without a protected env has nothing to rotate, `422 vault_nothing_to_rotate`). Each value is at least 8 characters (`422 vault_value_too_short`, naming the env only; readable values have no minimum). Writes a new immutable version holding the whole protected set and makes it current. Statuses: 200, 403, 404, 413, 422, 502.
 
 ### `DELETE /vault/v1/entries/{entry_id}`
 

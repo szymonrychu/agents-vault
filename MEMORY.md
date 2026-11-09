@@ -78,3 +78,7 @@ Lessons that outlive a session. Newest first.
 - Web PATCH of labels that adds, changes or drops a `project:` label of an entry referenced by presets is 409 `vault_entry_attached` unless `?force=true` (503 when the orchestrator cannot be asked); plain tag changes stay free. Existing relabel tests pass `force=true`.
 - Event actor is `user:<email>` from `X-Forwarded-Email`, else `X-Forwarded-User` (sidecar is loopback-only and the web listener already admits allowlisted peers only), else `user`; over-long (>200) or non-printable identities fall back to `user`. Migration 0003 widens the CHECK to `user:<1..200 chars>`; old rows keep `user`.
 - README and AGENTS.md state the trust boundary (Secret readers in the agents namespace are outside the model; rotate after such access).
+
+## 2026-11-09 minimum length for protected values
+- A protected env value must be at least 8 characters (counted as characters, not bytes) on create and on rotate (`PUT /entries/{id}/value`); the web PATCH never takes a protected env, so no other write route needs the check. Refusal is 422 `vault_value_too_short` with a fixed message naming only the envs (and the minimum), never a value or its length. Readable values have no minimum; stored entries are not touched.
+- On rotate the check runs after the exact-env-set check, so the envs it names are always validated entry env names. Tests that used one-character protected values now use values of 8 or more characters.

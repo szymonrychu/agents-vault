@@ -154,6 +154,12 @@ async def test_refusals_without_a_database_leak_nothing(caplog):
         assert too_large.status_code == 413
         assert too_large.json()["error"]["code"] == "secret_too_large"
 
+        short = await client.post(E, json={**good, "envs": envs(CANARY[:7])})
+        seen.record("create under minimum", short)
+        assert short.status_code == 422
+        assert short.json()["error"]["code"] == "vault_value_too_short"
+        assert CANARY[:7] not in short.text
+
         some_id = uuid.uuid4()
         rotate = await client.put(f"{E}/{some_id}/value", json={"values": {"API_KEY": big}})
         seen.record("rotate over cap", rotate)

@@ -41,6 +41,7 @@ _ENV = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 NAME_MAX = 120
 DESCRIPTION_MAX = 500
 ENVS_MAX = 20
+PROTECTED_MIN_CHARS = 8
 READABLE_MAX_BYTES = 4096
 
 
@@ -72,6 +73,18 @@ class EnvsMismatch(StoreError):
 class NothingToRotate(StoreError):
     """The entry has no protected env, so a rotate has nothing to write (422
     `vault_nothing_to_rotate`)."""
+
+
+class ValueTooShort(StoreError):
+    """A protected env value is under the minimum length (422 `vault_value_too_short`). The
+    message names the envs only, never a value or its length."""
+
+    def __init__(self, envs: list[str]) -> None:
+        super().__init__(
+            f"the value of {', '.join(envs)} is too short for a protected env"
+            f" (minimum {PROTECTED_MIN_CHARS} characters)"
+        )
+        self.envs = envs
 
 
 class EnvProtected(StoreError):
@@ -126,6 +139,13 @@ def _no_nul(text: str, what: str) -> str:
     if "\x00" in text:
         raise ValueError(f"{what} must not contain a NUL character")
     return text
+
+
+def _require_min_length(values: Mapping[str, SecretStr]) -> None:
+    """Refuse a protected value under PROTECTED_MIN_CHARS; `values` keys are validated env names."""
+    short = sorted(e for e, v in values.items() if len(v.get_secret_value()) < PROTECTED_MIN_CHARS)
+    if short:
+        raise ValueTooShort(short)
 
 
 def _protected_bytes(values: Mapping[str, SecretStr]) -> int:
@@ -235,6 +255,7 @@ async def create_entry(
         raise SecretTooLarge("the protected values are over the size limit")
     name = clean_name(name)
     envs = _clean_envs(envs)
+    _require_min_length({e.env: e.value for e in envs if e.protected})
     description = _clean_description(description)
     labels = clean_labels(labels)
     rows = [(e.env, e.protected, None if e.protected else e.value.get_secret_value()) for e in envs]
@@ -309,6 +330,7 @@ async def rotate_entry(
             raise NothingToRotate("the entry has no protected env to rotate")
         if set(values) != wanted:
             raise EnvsMismatch(sorted(wanted - set(values)), sorted(set(values) - wanted))
+        _require_min_length(values)
         version = await repo.next_version(conn, entry_id)
         await repo.insert_writing(conn, entry_id, version)
 

@@ -150,7 +150,7 @@ async def test_list_search_and_label_filter(web_client):
 
 async def test_detail_with_versions(web_client):
     entry_id = await make(web_client)
-    await web_client.put(f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": "two"}})
+    await web_client.put(f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": "two-value"}})
     r = await web_client.get(f"{E}/{entry_id}")
     assert r.status_code == 200
     out = r.json()
@@ -249,7 +249,7 @@ async def test_rotate_bumps_version(web_client, kube):
 
 
 async def test_rotate_must_name_exactly_the_protected_envs(web_client, kube):
-    envs = [*MIXED, {"env": "HARBOR_TOKEN", "protected": True, "value": "t"}]
+    envs = [*MIXED, {"env": "HARBOR_TOKEN", "protected": True, "value": "token-01"}]
     entry_id = await make(web_client, envs=envs)
     url = f"{E}/{entry_id}/value"
     missing = await web_client.put(url, json={"values": {"HARBOR_PASSWORD": canary}})
@@ -262,7 +262,7 @@ async def test_rotate_must_name_exactly_the_protected_envs(web_client, kube):
     )
     extra = await web_client.put(
         url,
-        json={"values": {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "t", "HARBOR_URL": "u"}},
+        json={"values": {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "token-01", "HARBOR_URL": "u"}},
     )
     assert extra.status_code == 422
     assert (extra.json()["error"]["missing"], extra.json()["error"]["extra"]) == (
@@ -272,7 +272,7 @@ async def test_rotate_must_name_exactly_the_protected_envs(web_client, kube):
     assert canary not in missing.text + extra.text
     assert len(kube.applied("Secret")) == 1
     ok = await web_client.put(
-        url, json={"values": {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "t"}}
+        url, json={"values": {"HARBOR_PASSWORD": canary, "HARBOR_TOKEN": "token-02"}}
     )
     assert ok.status_code == 200
     assert ok.json()["version"] == 2
@@ -294,7 +294,7 @@ async def test_rotate_errors(web_client, settings):
 async def test_rotate_kube_failure_is_502(web_client, kube):
     entry_id = await make(web_client)
     kube.fail("Secret", secret_name(uuid.UUID(entry_id), 2))
-    r = await web_client.put(f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": "new"}})
+    r = await web_client.put(f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": "new-value"}})
     assert r.status_code == 502
     assert r.json()["error"]["code"] == "secret_store_failed"
     assert (await web_client.get(f"{E}/{entry_id}")).json()["version"] == 1
@@ -577,7 +577,7 @@ async def test_pins_route_lists_only_unreleased(web_client):
 async def test_events_newest_first_paging_filter_and_limits(web_client):
     one = await make(web_client, name="ONE")
     await make(web_client, name="TWO")
-    await web_client.put(f"{E}/{one}/value", json={"values": {"GPG_KEY": "v"}})
+    await web_client.put(f"{E}/{one}/value", json={"values": {"GPG_KEY": "v-value-1"}})
     await web_client.patch(f"{E}/{one}", json={"name": "ONE renamed"})
     url = f"{PREFIX}/events"
     allr = (await web_client.get(url)).json()
@@ -712,3 +712,69 @@ async def test_actor_comes_from_sso_headers(web_client, headers, actor):
     assert r.status_code == 201
     events = (await web_client.get(f"{PREFIX}/events")).json()
     assert events[0]["actor"] == actor
+
+
+SHORT = "Zq9#k2x"  # 7 characters, one under the protected minimum
+EIGHT = "Zq9#k2xW"
+MIN_MESSAGE = "the value of {env} is too short for a protected env (minimum 8 characters)"
+
+
+def _short_clean(*responses, caplog):
+    for r in responses:
+        assert SHORT not in r.text and SHORT not in str(r.headers)
+        assert "7" not in r.json()["error"]["message"]
+    assert SHORT not in caplog.text
+    assert all(SHORT not in record.getMessage() for record in caplog.records)
+
+
+async def test_short_protected_value_is_refused_on_create_and_rotate(
+    web_client, kube, pool, caplog
+):
+    from test_canary import table_rows
+
+    caplog.set_level("DEBUG")
+    short_create = await create(
+        web_client, envs=[{"env": "GPG_KEY", "protected": True, "value": SHORT}]
+    )
+    assert short_create.status_code == 422
+    err = short_create.json()["error"]
+    assert (err["code"], err["message"], err["envs"]) == (
+        "vault_value_too_short",
+        MIN_MESSAGE.format(env="GPG_KEY"),
+        ["GPG_KEY"],
+    )
+    assert kube.applied("Secret") == []
+    assert (await web_client.get(E)).json() == []
+
+    entry_id = await make(web_client)
+    short_rotate = await web_client.put(
+        f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": SHORT}}
+    )
+    assert short_rotate.status_code == 422
+    assert short_rotate.json()["error"]["message"] == MIN_MESSAGE.format(env="GPG_KEY")
+    assert len(kube.applied("Secret")) == 1
+    assert (await web_client.get(f"{E}/{entry_id}")).json()["version"] == 1
+    _short_clean(short_create, short_rotate, caplog=caplog)
+    async with pool.connection() as conn:
+        for table, rows in (await table_rows(conn)).items():
+            assert SHORT not in "\n".join(rows), table
+    assert SHORT not in repr(kube.objects) + repr(kube.applies)
+
+
+async def test_protected_value_of_exactly_eight_characters_is_accepted(web_client):
+    entry_id = await make(web_client, envs=[{"env": "GPG_KEY", "protected": True, "value": EIGHT}])
+    r = await web_client.put(f"{E}/{entry_id}/value", json={"values": {"GPG_KEY": EIGHT + "!"}})
+    assert r.status_code == 200
+
+
+async def test_short_protected_values_name_every_env_and_readable_values_stay_free(web_client):
+    envs = [
+        {"env": "A_URL", "protected": False, "value": "u"},
+        {"env": "A_USER", "protected": True, "value": SHORT},
+        {"env": "A_PASS", "protected": True, "value": SHORT[:1]},
+    ]
+    r = await create(web_client, envs=envs)
+    assert r.status_code == 422
+    assert r.json()["error"]["envs"] == ["A_PASS", "A_USER"]
+    ok = await create(web_client, envs=[envs[0]])
+    assert ok.status_code == 201
