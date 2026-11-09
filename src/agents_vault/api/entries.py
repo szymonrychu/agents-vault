@@ -33,6 +33,8 @@ from agents_vault.orchestrator import make_client
 log = logging.getLogger(__name__)
 
 ACTOR = "user"
+ACTOR_MAX = 200
+PROJECT_PREFIX = "project:"
 
 router = APIRouter()
 
@@ -65,6 +67,17 @@ def _mapped() -> Iterator[None]:
         raise ApiError(422, "invalid_request", str(exc)) from None
 
 
+def actor_of(request: Request) -> str:
+    """The audit actor: `user:<email>` from the identity headers of the loopback-only SSO
+    sidecar (the web listener serves allowlisted peers only), else `user`. Control characters
+    and over-long values are dropped."""
+    for header in ("x-forwarded-email", "x-forwarded-user"):
+        who = request.headers.get(header, "").strip()
+        if who and len(who) <= ACTOR_MAX and who.isprintable():
+            return f"{ACTOR}:{who}"
+    return ACTOR
+
+
 def _kube(request: Request) -> KubeApi:
     state = request.app.state
     if getattr(state, "kube", None) is None:
@@ -79,6 +92,15 @@ def _index(request: Request) -> AttachmentIndex:
             state.orchestrator = make_client(state.settings)
         state.attachments = AttachmentIndex(state.orchestrator.list_presets)
     return state.attachments
+
+
+def _attachment_ref(a: Attachment) -> dict[str, str]:
+    return {
+        "preset_id": a.preset_id,
+        "preset_name": a.preset_name,
+        "env": a.env,
+        "entry_env": a.entry_env,
+    }
 
 
 def _attachment_view(att: Attachment, entry_labels: list[str]) -> AttachmentView:
@@ -154,7 +176,7 @@ async def create_entry(request: Request, body: EntryIn) -> EntryView:
             request.app.state.pool,
             _kube(request),
             settings.namespace,
-            ACTOR,
+            actor_of(request),
             name=body.name,
             description=body.description,
             labels=body.labels,
@@ -169,12 +191,45 @@ async def get_entry(request: Request, entry_id: uuid.UUID) -> EntryDetail:
     return await _detail(request, await _live(request, entry_id))
 
 
+def _projects(labels: list[str]) -> set[str]:
+    return {label for label in labels if label.startswith(PROJECT_PREFIX)}
+
+
+async def _guard_scope_change(request: Request, entry_id: uuid.UUID, labels: list[str]) -> None:
+    """Changing or dropping a `project:` label of an attached entry needs `force=true`."""
+    entry = await _live(request, entry_id)
+    with _mapped():
+        new = _projects(store.clean_labels(labels))
+    if new == _projects(entry["labels"]):
+        return
+    attached = await _index(request).by_entry(fresh=True)
+    if attached is None:
+        raise ApiError(
+            503, "orchestrator_unavailable", "attachments cannot be checked, nothing was changed"
+        )
+    refs = attached.get(str(entry_id), [])
+    if refs:
+        raise ApiError(
+            409,
+            "vault_entry_attached",
+            "the entry is referenced by presets, its project scope needs force=true to change",
+            {"attachments": [_attachment_ref(a) for a in refs]},
+        )
+
+
 @router.patch("/entries/{entry_id}", response_model=EntryDetail)
-async def patch_entry(request: Request, entry_id: uuid.UUID, body: EntryPatch) -> EntryDetail:
+async def patch_entry(
+    request: Request,
+    entry_id: uuid.UUID,
+    body: EntryPatch,
+    force: Annotated[bool, Query()] = False,
+) -> EntryDetail:
+    if body.labels is not None and not force:
+        await _guard_scope_change(request, entry_id, body.labels)
     with _mapped():
         await store.update_entry(
             request.app.state.pool,
-            ACTOR,
+            actor_of(request),
             entry_id=entry_id,
             name=body.name,
             description=body.description,
@@ -192,7 +247,7 @@ async def rotate_entry(request: Request, entry_id: uuid.UUID, body: ValuesIn) ->
             request.app.state.pool,
             _kube(request),
             settings.namespace,
-            ACTOR,
+            actor_of(request),
             entry_id=entry_id,
             values=body.values,
             max_value_bytes=settings.max_value_bytes,
@@ -215,20 +270,10 @@ async def delete_entry(request: Request, entry_id: uuid.UUID) -> Response:
             409,
             "vault_entry_attached",
             "the entry is referenced by presets",
-            {
-                "attachments": [
-                    {
-                        "preset_id": a.preset_id,
-                        "preset_name": a.preset_name,
-                        "env": a.env,
-                        "entry_env": a.entry_env,
-                    }
-                    for a in refs
-                ]
-            },
+            {"attachments": [_attachment_ref(a) for a in refs]},
         )
     with _mapped():
-        await store.delete_entry(request.app.state.pool, ACTOR, entry_id=entry_id)
+        await store.delete_entry(request.app.state.pool, actor_of(request), entry_id=entry_id)
     return Response(status_code=204)
 
 

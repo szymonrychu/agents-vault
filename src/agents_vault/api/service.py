@@ -116,9 +116,13 @@ class PinsOut(BaseModel):
 
 def _preset_labels(raw: list[str]) -> list[str]:
     """Preset labels follow the orchestrator's grammar only; the `project:` slug rule is for
-    entry labels, so a preset label such as `project:a_b` is matched literally."""
+    entry labels, so a preset label such as `project:a_b` is matched literally. A preset has at
+    most one `project:` label (its own project)."""
     with _mapped():
-        return normalize_labels(raw)
+        labels = normalize_labels(raw)
+    if sum(1 for label in labels if label.startswith("project:")) > 1:
+        raise ApiError(422, "invalid_request", "preset_labels: at most one project: label")
+    return labels
 
 
 class _Classified:
