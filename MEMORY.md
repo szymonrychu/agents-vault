@@ -72,3 +72,9 @@ Lessons that outlive a session. Newest first.
 - Entries carry descriptive tags (admin, credentials, github, ...) and presets have none, so the old rule (any labelled entry needs a shared label) made every attach and session start fail 422 `vault_label_mismatch`. agents-common v0.13.0 `labels_match` now treats only `project:` labels as a scope: no `project:` label on the entry means match, otherwise the sets must intersect. Pin bumped to v0.13.0.
 - Vault label validation (`clean_labels`) already rejects only malformed `project:` labels and accepts any normalised tag, so it needed no change; the attachment `matches` marker and `mismatched_attachments` in `api/entries.py`, and resolve/pins in `api/service.py`, follow the new rule through `labels_match`.
 - Tests that used tag labels (`team-a`/`team-b`) to force a mismatch now use `project:` labels; new tests cover tag-only and mixed entries.
+
+## 2026-11-09 scope and audit hardening
+- Service `_preset_labels` refuses more than one `project:` label (422 `invalid_request`): the orchestrator sends exactly its preset's project, so a second one can only widen the match.
+- Web PATCH of labels that adds, changes or drops a `project:` label of an entry referenced by presets is 409 `vault_entry_attached` unless `?force=true` (503 when the orchestrator cannot be asked); plain tag changes stay free. Existing relabel tests pass `force=true`.
+- Event actor is `user:<email>` from `X-Forwarded-Email`, else `X-Forwarded-User` (sidecar is loopback-only and the web listener already admits allowlisted peers only), else `user`; over-long (>200) or non-printable identities fall back to `user`. Migration 0003 widens the CHECK to `user:<1..200 chars>`; old rows keep `user`.
+- README and AGENTS.md state the trust boundary (Secret readers in the agents namespace are outside the model; rotate after such access).

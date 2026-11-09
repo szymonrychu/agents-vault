@@ -537,3 +537,16 @@ def test_web_app_has_no_resolve_or_pins_routes():
     paths = {p for _, p in _routes(web)}
     assert f"{E}/resolve" not in paths
     assert not any(p.startswith(P) for p in paths)
+
+
+async def test_two_project_preset_labels_are_422(service_client):
+    for path, extra in ((f"{E}/resolve", {}), (P, {"session_id": str(uuid.uuid4())})):
+        r = await service_client.post(
+            path, json={"preset_labels": ["project:a", "Project:b"], "refs": {}, **extra}
+        )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "invalid_request"
+    one = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": ["project:a", "team"], "refs": {}}
+    )
+    assert one.status_code == 200

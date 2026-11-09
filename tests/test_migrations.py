@@ -17,7 +17,11 @@ def add_entry(conn, name="Database password", **cols) -> uuid.UUID:
 
 
 def test_applies_twice_idempotent(empty_db_url):
-    assert run_migrations(empty_db_url, PACKAGE) == ["0001_vault.sql", "0002_entry_envs.sql"]
+    assert run_migrations(empty_db_url, PACKAGE) == [
+        "0001_vault.sql",
+        "0002_entry_envs.sql",
+        "0003_event_actor_identity.sql",
+    ]
     assert run_migrations(empty_db_url, PACKAGE) == []
     with psycopg.connect(empty_db_url) as conn:
         tables = {
@@ -124,6 +128,13 @@ def test_event_actor_check(conn):
         conn.execute("INSERT INTO events (kind, actor) VALUES ('k', %s)", (actor,))
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("INSERT INTO events (kind, actor) VALUES ('k', 'agent')")
+
+
+def test_event_actor_check_accepts_user_identity(conn):
+    conn.execute("INSERT INTO events (kind, actor) VALUES ('k', 'user:a@example.com')")
+    for bad in ("user:", "userx", "user:" + "x" * 201):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("INSERT INTO events (kind, actor) VALUES ('k', %s)", (bad,))
 
 
 def test_indexes_exist(conn):

@@ -42,14 +42,14 @@ WEB_ERRORS = {
     403: "source address is not allowed on the web listener (forbidden)",
     404: "no such entry (not_found)",
     409: "name taken, case-insensitively (vault_name_taken) or entry still attached to presets"
-    " (vault_entry_attached)",
+    " (vault_entry_attached; a patch that changes or drops a project: label needs force=true)",
     413: "protected values together larger than VAULT_MAX_VALUE_BYTES (secret_too_large)",
     422: "invalid request (invalid_request), rotate values not exactly the protected envs"
     " (vault_envs_mismatch), rotate of an entry without a protected env"
     " (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env"
     " (vault_env_unknown)",
     502: "the Kubernetes Secret could not be written (secret_store_failed)",
-    503: "attachments cannot be checked, nothing was deleted (orchestrator_unavailable)",
+    503: "attachments cannot be checked, nothing was changed (orchestrator_unavailable)",
 }
 SERVICE_ERRORS = {
     401: "no or an unknown bearer service token (unauthorized)",
@@ -65,7 +65,7 @@ ROUTE_ERRORS: dict[bool, dict[tuple[str, str], tuple[int, ...]]] = {
         ("get", "/entries"): (422,),
         ("post", "/entries"): (409, 413, 422, 502),
         ("get", "/entries/{entry_id}"): (404, 422),
-        ("patch", "/entries/{entry_id}"): (404, 409, 422),
+        ("patch", "/entries/{entry_id}"): (404, 409, 422, 503),
         ("put", "/entries/{entry_id}/value"): (404, 413, 422, 502),
         ("delete", "/entries/{entry_id}"): (404, 409, 422, 503),
         ("get", "/entries/{entry_id}/pins"): (404, 422),

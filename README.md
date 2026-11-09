@@ -58,6 +58,10 @@ Every process reads one validated `VAULT_*` environment. A bad or missing variab
 
 The vault's Kubernetes Role on `secrets` grants exactly the verbs `create`, `patch` and `delete`. It never grants `get`, `list` or `watch`: the code applies and deletes Secrets by deterministic name (`vault-<entry uuid>-v<n>`) and never reads one back.
 
+## Trust boundary
+
+The vault protects a value from the vault's own API, database, events and logs, and from the agents that only see entry names. It does not protect a value from anything that can read Secrets in the agents namespace through the Kubernetes API or the node: sessions with cluster-admin access, privileged or docker-in-docker sessions, node root and cluster operators are outside the model, because the entries' Secrets carry the `app.kubernetes.io/managed-by=agents-vault` label and deterministic names. After such access, rotate the affected entries and restart the sessions that pin them. Prefer entries scoped to one `project:` label for presets that run with these privileges.
+
 ## Errors
 
 Every error is `{"error": {"code": "...", "message": "...", ...extra}}`. A validation error is `422 invalid_request` with a message built from the field location and the rule, never from the input; a caller-chosen key (an env name in `values`, `envs` or `refs`) is cut from the location.
@@ -82,7 +86,7 @@ Entry detail: view, versions, attachments (one per preset env referencing an env
 
 ### `PATCH /vault/v1/entries/{entry_id}`
 
-Body `{name?, description?, labels?, envs?: {ENV: value}}`, at least one. A rename is free (refs carry the id) but stays unique case-insensitively. `envs` sets readable values in place: no new version, `updated_at` per env. Statuses: 200, 403, 404, 409 `vault_name_taken`, 422 (`vault_env_protected` or `vault_env_unknown` with `envs`, `invalid_request`).
+Body `{name?, description?, labels?, envs?: {ENV: value}}`, at least one. A labels change that adds, changes or drops a `project:` label of an entry that presets reference is refused with `409 vault_entry_attached` (with `attachments`) unless the query has `force=true`; `503 orchestrator_unavailable` when the attachments cannot be checked. A rename is free (refs carry the id) but stays unique case-insensitively. `envs` sets readable values in place: no new version, `updated_at` per env. Statuses: 200, 403, 404, 409 `vault_name_taken` or `vault_entry_attached`, 503, 422 (`vault_env_protected` or `vault_env_unknown` with `envs`, `invalid_request`).
 
 ### `PUT /vault/v1/entries/{entry_id}/value`
 
@@ -98,7 +102,7 @@ Sessions pinning a version of the entry, with the preset env and the entry env. 
 
 ### `GET /vault/v1/events`
 
-Query: `entry` (entry id), `before_id`, `limit` (1..200, default 50). Newest first. Events carry entry and env names, versions and ids, never a value. Statuses: 200, 403, 422.
+Query: `entry` (entry id), `before_id`, `limit` (1..200, default 50). Newest first. An event's `actor` is `user:<email>` (the SSO identity from the `X-Forwarded-Email`, else `X-Forwarded-User`, header of the loopback-only sidecar; the web listener serves allowlisted peers only), `user` without one, `orchestrator` or `sweeper`. Events carry entry and env names, versions and ids, never a value. Statuses: 200, 403, 422.
 
 ## Service API
 
@@ -110,7 +114,7 @@ Query: `q`, `name` (exact, case-insensitive: binds a name to its id). Entry summ
 
 ### `POST /vault/v1/entries/resolve`
 
-Body `{preset_labels, refs}`. Returns `{resolved, unknown, bad_env, mismatched}`: `resolved` per preset env, and the preset envs whose entry is unknown, whose entry has no such env, or whose entry labels do not match. Statuses: 200, 401, 422.
+Body `{preset_labels, refs}`; `preset_labels` carries at most one `project:` label (422 `invalid_request` otherwise). Returns `{resolved, unknown, bad_env, mismatched}`: `resolved` per preset env, and the preset envs whose entry is unknown, whose entry has no such env, or whose entry labels do not match. Statuses: 200, 401, 422.
 
 ### `POST /vault/v1/pins`
 

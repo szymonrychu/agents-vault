@@ -452,10 +452,14 @@ async def test_patch_relabel_reports_mismatched(web_client, fake_orch):
     entry_id = await make(web_client, labels=["project:a"])
     fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:a"])
     web_client.app.state.attachments = None
-    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:z"]})
+    r = await web_client.patch(
+        f"{E}/{entry_id}", json={"labels": ["project:z"]}, params={"force": "true"}
+    )
     assert r.status_code == 200
     assert [a["preset_name"] for a in r.json()["mismatched_attachments"]] == ["research"]
-    ok = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:a"]})
+    ok = await web_client.patch(
+        f"{E}/{entry_id}", json={"labels": ["project:a"]}, params={"force": "true"}
+    )
     assert ok.json()["mismatched_attachments"] == []
 
 
@@ -463,7 +467,9 @@ async def test_patch_retag_never_reports_mismatched(web_client, fake_orch):
     entry_id = await make(web_client, labels=["project:a"])
     fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:a"])
     web_client.app.state.attachments = None
-    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["team-z", "admin"]})
+    r = await web_client.patch(
+        f"{E}/{entry_id}", json={"labels": ["team-z", "admin"]}, params={"force": "true"}
+    )
     assert r.status_code == 200
     assert r.json()["mismatched_attachments"] == []
 
@@ -644,3 +650,65 @@ async def test_delete_503_on_a_200_with_a_bad_body(web_client, fake_orch):
     listed = await web_client.get(E)
     assert listed.status_code == 200
     assert listed.json()[0]["attachments_count"] is None
+
+
+async def test_patch_project_scope_of_attached_entry_needs_force(web_client, fake_orch):
+    entry_id = await make(web_client, labels=["project:a", "tag"])
+    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:a"])
+    web_client.app.state.attachments = None
+    for labels in (["project:b"], ["tag"], ["project:a", "project:b"]):
+        r = await web_client.patch(f"{E}/{entry_id}", json={"labels": labels})
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "vault_entry_attached"
+        assert r.json()["error"]["attachments"][0]["preset_name"] == "research"
+    assert (await web_client.get(f"{E}/{entry_id}")).json()["labels"] == ["project:a", "tag"]
+    same = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["tag2", "project:a"]})
+    assert same.status_code == 200
+    forced = await web_client.patch(
+        f"{E}/{entry_id}", json={"labels": []}, params={"force": "true"}
+    )
+    assert forced.status_code == 200
+    assert forced.json()["labels"] == []
+
+
+async def test_patch_project_scope_of_unattached_entry_is_free(web_client):
+    entry_id = await make(web_client, labels=["project:a"])
+    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:b"]})
+    assert r.status_code == 200
+
+
+async def test_patch_project_scope_with_unreachable_orchestrator_is_503(web_client, fake_orch):
+    entry_id = await make(web_client, labels=["project:a"])
+
+    async def down():
+        return None
+
+    web_client.app.state.attachments = type(
+        "A", (), {"by_entry": lambda self, fresh=False: down()}
+    )()
+    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:b"]})
+    assert r.status_code == 503
+    ok = await web_client.patch(
+        f"{E}/{entry_id}", json={"labels": ["project:b"]}, params={"force": "true"}
+    )
+    assert ok.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("headers", "actor"),
+    [
+        (
+            {"X-Forwarded-Email": "ann@example.com", "X-Forwarded-User": "ann"},
+            "user:ann@example.com",
+        ),
+        ({"X-Forwarded-User": "ann"}, "user:ann"),
+        ({}, "user"),
+        ({"X-Forwarded-Email": "x" * 201}, "user"),
+        ({"X-Forwarded-Email": "  "}, "user"),
+    ],
+)
+async def test_actor_comes_from_sso_headers(web_client, headers, actor):
+    r = await web_client.post(E, json=body(), headers=headers)
+    assert r.status_code == 201
+    events = (await web_client.get(f"{PREFIX}/events")).json()
+    assert events[0]["actor"] == actor

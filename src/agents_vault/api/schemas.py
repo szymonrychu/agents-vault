@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class _Strict(BaseModel):
@@ -100,7 +100,9 @@ class EventView(BaseModel):
     id: int
     ts: datetime
     kind: str
-    actor: str
+    actor: str = Field(
+        description="who acted: user:<email> (SSO identity), user, orchestrator or sweeper"
+    )
     entry_id: uuid.UUID | None
     entry_name: str | None
     data: dict[str, Any]

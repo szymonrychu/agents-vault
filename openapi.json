@@ -428,6 +428,7 @@
       "EventView": {
         "properties": {
           "actor": {
+            "description": "who acted: user:<email> (SSO identity), user, orchestrator or sweeper",
             "title": "Actor",
             "type": "string"
           },
@@ -708,7 +709,7 @@
                 }
               }
             },
-            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached; a patch that changes or drops a project: label needs force=true)"
           },
           "413": {
             "content": {
@@ -791,7 +792,7 @@
                 }
               }
             },
-            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached; a patch that changes or drops a project: label needs force=true)"
           },
           "422": {
             "content": {
@@ -811,7 +812,7 @@
                 }
               }
             },
-            "description": "attachments cannot be checked, nothing was deleted (orchestrator_unavailable)"
+            "description": "attachments cannot be checked, nothing was changed (orchestrator_unavailable)"
           }
         },
         "summary": "Delete Entry"
@@ -886,6 +887,16 @@
               "title": "Entry Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
           }
         ],
         "requestBody": {
@@ -937,7 +948,7 @@
                 }
               }
             },
-            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached)"
+            "description": "name taken, case-insensitively (vault_name_taken) or entry still attached to presets (vault_entry_attached; a patch that changes or drops a project: label needs force=true)"
           },
           "422": {
             "content": {
@@ -948,6 +959,16 @@
               }
             },
             "description": "invalid request (invalid_request), rotate values not exactly the protected envs (vault_envs_mismatch), rotate of an entry without a protected env (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env (vault_env_unknown)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "attachments cannot be checked, nothing was changed (orchestrator_unavailable)"
           }
         },
         "summary": "Patch Entry"
