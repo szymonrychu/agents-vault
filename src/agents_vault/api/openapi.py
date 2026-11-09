@@ -45,8 +45,10 @@ WEB_ERRORS = {
     " (vault_entry_attached; a patch that changes or drops a project: label needs force=true)",
     413: "protected values together larger than VAULT_MAX_VALUE_BYTES (secret_too_large)",
     422: "invalid request (invalid_request), rotate values not exactly the protected envs"
-    " (vault_envs_mismatch), rotate of an entry without a protected env"
-    " (vault_nothing_to_rotate), edit of a protected env (vault_env_protected) or of an unknown env"
+    " (vault_envs_mismatch; carries missing, the entry's env names, and extra_count, a count only),"
+    " rotate of an entry without a protected env"
+    " (vault_nothing_to_rotate), protected value under 8 characters (vault_value_too_short),"
+    " edit of a protected env (vault_env_protected) or of an unknown env"
     " (vault_env_unknown)",
     502: "the Kubernetes Secret could not be written (secret_store_failed)",
     503: "attachments cannot be checked, nothing was changed (orchestrator_unavailable)",

@@ -287,7 +287,7 @@ async def test_pins_are_idempotent_per_session_and_survive_a_rotate(
         NS,
         "user",
         entry_id=entry_id,
-        values={"KEY": SecretStr("x")},
+        values={"KEY": SecretStr("x-value-1")},
         max_value_bytes=1024,
     )
     again = await service_client.post(P, json=pin_body(sid, B=r(second), C=r(uuid.uuid4())))
@@ -392,7 +392,7 @@ async def test_pin_holds_for_share_so_a_rotate_waits_and_the_version_is_kept(poo
                     NS,
                     "user",
                     entry_id=entry_id,
-                    values={"KEY": SecretStr("two")},
+                    values={"KEY": SecretStr("two-value")},
                     max_value_bytes=1024,
                 )
             )

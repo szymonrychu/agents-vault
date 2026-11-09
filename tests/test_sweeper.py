@@ -64,7 +64,7 @@ async def make(pool, kube, name="API_KEY"):
         name=name,
         description="d",
         labels=[],
-        envs=[store.EnvIn("API_KEY", True, SecretStr("v"))],
+        envs=[store.EnvIn("API_KEY", True, SecretStr("v-value-1"))],
         max_value_bytes=1024,
     )
 
@@ -133,7 +133,7 @@ async def test_orchestrator_error_releases_nothing_but_gc_and_reap_run(
         NS,
         "user",
         entry_id=entry_id,
-        values={"API_KEY": SecretStr("w")},
+        values={"API_KEY": SecretStr("w-value-1")},
         max_value_bytes=1024,
     )
     # v1 retired but pinned: stays; a stale writing row is reaped
@@ -171,7 +171,7 @@ async def test_gc_deletes_only_retired_versions_without_live_pins(
     entry_id = await make(pool, kube)
     sid = await pin(pool, entry_id, version=1)
     list_session(fake_orch, sid)
-    for v in ("b", "c"):
+    for v in ("b-value-1", "c-value-1"):
         await store.rotate_entry(
             pool,
             kube,
@@ -211,7 +211,7 @@ async def test_gc_kube_failure_leaves_row_for_next_pass(
         NS,
         "user",
         entry_id=entry_id,
-        values={"API_KEY": SecretStr("b")},
+        values={"API_KEY": SecretStr("b-value-1")},
         max_value_bytes=1024,
     )
     kube.fail("Secret", secret_name(entry_id, 1), verbs=["delete"], times=1)
@@ -362,7 +362,7 @@ async def test_kube_client_built_once_per_pass(pool, settings, orch, kube, facto
             NS,
             "user",
             entry_id=entry_id,
-            values={"API_KEY": SecretStr("b")},
+            values={"API_KEY": SecretStr("b-value-1")},
             max_value_bytes=1024,
         )
     report = await run(pool, settings, orch, factory)
@@ -434,7 +434,7 @@ async def test_gc_deletes_a_secret_whose_writer_cleanup_failed(pool, settings, o
             NS,
             "user",
             entry_id=entry_id,
-            values={"API_KEY": SecretStr("b")},
+            values={"API_KEY": SecretStr("b-value-1")},
             max_value_bytes=1024,
         )
     name = secret_name(entry_id, 2)
