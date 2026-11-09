@@ -9,6 +9,8 @@ A write-only secret vault for the agents system. An entry is a free-text name (u
 - a protected env's value goes straight into an immutable Kubernetes Secret (one per version, one data key per protected env) and is never stored in Postgres (no value, hash or length), logged or returned by any route;
 - a readable env's value (at most 4096 bytes) is stored in Postgres, shown in the web and service views, edited in place without a new version, and never put into an event.
 
+Label rule: only labels with the reserved prefix `project:` restrict where an entry may be attached. All other labels are descriptive tags: stored, normalised, searchable and shown, but never restricting. An entry without a `project:` label matches every preset; one with `project:` labels matches a preset only when the preset's effective labels (its own plus `project:<slug>`) share at least one of them (`agents_common.labels.labels_match`, agents-common v0.13.0).
+
 The orchestrator pins versions to sessions through the service listener: a protected env comes back as a Secret ref, a readable env as its value. The service has its own Postgres database (entries, entry envs, versions, pins, events).
 
 ## Development

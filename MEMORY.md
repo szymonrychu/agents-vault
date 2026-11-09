@@ -67,3 +67,8 @@ Lessons that outlive a session. Newest first.
 - `web` and `sweeper` pods mount the ServiceAccount token (they create/patch and delete Secrets through the Kubernetes API); `service` sets `automountServiceAccountToken: false` because it only reads Postgres and never talks to the API server. The ServiceAccount object itself stays non-automounting.
 - The Role grants exactly `create`, `patch`, `delete` on `secrets` in the release namespace: no get, list or watch, so a compromised vault pod cannot read any Secret back (write-only by construction). `patch` is for server-side apply.
 - `serviceListener.tokensSecret.name` is required and the Secret is external (never rendered by the chart); it is mounted only into the `service` container, as in agents-history.
+
+## 2026-11-09 only project: labels restrict (T-72, user decision Q25 A)
+- Entries carry descriptive tags (admin, credentials, github, ...) and presets have none, so the old rule (any labelled entry needs a shared label) made every attach and session start fail 422 `vault_label_mismatch`. agents-common v0.13.0 `labels_match` now treats only `project:` labels as a scope: no `project:` label on the entry means match, otherwise the sets must intersect. Pin bumped to v0.13.0.
+- Vault label validation (`clean_labels`) already rejects only malformed `project:` labels and accepts any normalised tag, so it needed no change; the attachment `matches` marker and `mismatched_attachments` in `api/entries.py`, and resolve/pins in `api/service.py`, follow the new rule through `labels_match`.
+- Tests that used tag labels (`team-a`/`team-b`) to force a mismatch now use `project:` labels; new tests cover tag-only and mixed entries.

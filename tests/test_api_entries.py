@@ -410,12 +410,21 @@ async def test_attachments_listed_per_env(web_client, fake_orch):
 
 
 async def test_attachment_disjoint_labels_do_not_match(web_client, fake_orch):
-    entry_id = await make(web_client, labels=["team-a"])
-    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["team-b"])
+    entry_id = await make(web_client, labels=["project:a"])
+    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:b"])
     web_client.app.state.attachments = None
     out = (await web_client.get(f"{E}/{entry_id}")).json()
     assert out["attachments"][0]["matches"] is False
     assert [a["preset_name"] for a in out["mismatched_attachments"]] == ["research"]
+
+
+async def test_attachment_tag_only_entry_matches_any_preset(web_client, fake_orch):
+    entry_id = await make(web_client, labels=["admin", "github"])
+    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["team-b"])
+    web_client.app.state.attachments = None
+    out = (await web_client.get(f"{E}/{entry_id}")).json()
+    assert out["attachments"][0]["matches"] is True
+    assert out["mismatched_attachments"] == []
 
 
 async def test_unlabelled_entry_matches_a_preset_without_labels(web_client, fake_orch):
@@ -440,14 +449,23 @@ async def test_attachments_count_counts_refs_by_id(web_client, fake_orch):
 
 
 async def test_patch_relabel_reports_mismatched(web_client, fake_orch):
-    entry_id = await make(web_client, labels=["team-a"])
-    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["team-a"])
+    entry_id = await make(web_client, labels=["project:a"])
+    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:a"])
     web_client.app.state.attachments = None
-    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["team-z"]})
+    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:z"]})
     assert r.status_code == 200
     assert [a["preset_name"] for a in r.json()["mismatched_attachments"]] == ["research"]
-    ok = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["team-a"]})
+    ok = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["project:a"]})
     assert ok.json()["mismatched_attachments"] == []
+
+
+async def test_patch_retag_never_reports_mismatched(web_client, fake_orch):
+    entry_id = await make(web_client, labels=["project:a"])
+    fake_orch.add_preset("research", spec={"env": {"GPG": ref(entry_id)}}, labels=["project:a"])
+    web_client.app.state.attachments = None
+    r = await web_client.patch(f"{E}/{entry_id}", json={"labels": ["team-z", "admin"]})
+    assert r.status_code == 200
+    assert r.json()["mismatched_attachments"] == []
 
 
 async def test_orchestrator_failure_gives_null_attachments(web_client, fake_orch):

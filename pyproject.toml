@@ -5,7 +5,7 @@ description = "Write-only secret vault for the agents system"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "agents-common @ git+https://github.com/szymonrychu/agents-common@v0.11.0",
+    "agents-common @ git+https://github.com/szymonrychu/agents-common@v0.13.0",
     "fastapi",
     "uvicorn[standard]",
     "httpx",

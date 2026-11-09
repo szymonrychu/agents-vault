@@ -83,13 +83,13 @@ async def test_gate_accepts_the_token_file_token(service_client):
 
 async def test_resolve_known_unknown_bad_env_and_mismatched_in_one_call(service_client, pool, kube):
     open_key = await make(pool, kube, "open key")
-    team = await make(pool, kube, "team key", labels=["team-a"])
-    other = await make(pool, kube, "other key", labels=["team-b"])
+    team = await make(pool, kube, "team key", labels=["project:a"])
+    other = await make(pool, kube, "other key", labels=["project:b"])
     nope = uuid.uuid4()
     r_ = await service_client.post(
         f"{E}/resolve",
         json={
-            "preset_labels": ["Team-A"],
+            "preset_labels": ["Project:A"],
             "refs": {
                 "A": r(open_key),
                 "B": r(team),
@@ -111,7 +111,7 @@ async def test_resolve_known_unknown_bad_env_and_mismatched_in_one_call(service_
         "name": "team key",
         "env": "KEY",
         "protected": True,
-        "labels": ["team-a"],
+        "labels": ["project:a"],
         "version": 1,
         "matches": True,
     }
@@ -128,10 +128,36 @@ async def test_unlabelled_entry_matches_every_preset(service_client, pool, kube,
     assert out.json()["mismatched"] == []
 
 
-async def test_labelled_entry_against_unlabelled_preset_is_mismatched(service_client, pool, kube):
-    team = await make(pool, kube, "team key", labels=["team-a"])
-    out = await service_client.post(f"{E}/resolve", json={"refs": {"A": r(team)}})
+async def test_project_labelled_entry_against_unlabelled_preset_is_mismatched(
+    service_client, pool, kube
+):
+    proj = await make(pool, kube, "proj key", labels=["project:a"])
+    out = await service_client.post(f"{E}/resolve", json={"refs": {"A": r(proj)}})
     assert out.json()["mismatched"] == ["A"]
+
+
+@pytest.mark.parametrize("preset_labels", [[], ["project:x"], ["team-b"]])
+async def test_tag_only_entry_matches_every_preset(service_client, pool, kube, preset_labels):
+    tagged = await make(pool, kube, "tagged key", labels=["admin", "github", "credentials"])
+    out = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": preset_labels, "refs": {"A": r(tagged)}}
+    )
+    assert out.json()["mismatched"] == []
+    pinned = await service_client.post(P, json=pin_body(labels=preset_labels, A=r(tagged)))
+    assert pinned.status_code == 200
+
+
+async def test_mixed_tags_and_project_label_restrict_by_project_only(service_client, pool, kube):
+    mixed = await make(pool, kube, "mixed key", labels=["admin", "project:x"])
+    refs = {"A": r(mixed)}
+    ok = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": ["project:x"], "refs": refs}
+    )
+    tag_only_preset = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": ["admin"], "refs": refs}
+    )
+    assert ok.json()["mismatched"] == []
+    assert tag_only_preset.json()["mismatched"] == ["A"]  # a shared tag does not satisfy project:x
 
 
 async def test_project_label_matches_a_preset_carrying_it(service_client, pool, kube):
@@ -157,12 +183,12 @@ async def test_preset_label_outside_the_project_slug_rule_is_accepted_literally(
         f"{E}/resolve", json={"preset_labels": ["Project:A_B"], "refs": refs}
     )
     assert out.status_code == 200
-    assert out.json()["mismatched"] == ["A", "B"]  # no normalisation to another label
+    assert out.json()["mismatched"] == ["A"]  # no normalisation; tag entry B matches
     conn.execute("UPDATE entries SET labels = ARRAY['project:a_b'] WHERE id = %s", (slug,))
     out = await service_client.post(
         f"{E}/resolve", json={"preset_labels": ["project:a_b"], "refs": refs}
     )
-    assert out.json()["mismatched"] == ["B"]  # the same literal label matches
+    assert out.json()["mismatched"] == []  # the same literal label matches
     pinned = await service_client.post(P, json=pin_body(labels=["project:a_b"], A=r(slug)))
     assert pinned.status_code == 200
 
@@ -312,8 +338,8 @@ async def test_pins_deleted_entry_is_unknown(service_client, pool, kube):
 
 
 async def test_pins_label_mismatch_is_422_with_envs(service_client, pool, kube, conn):
-    team = await make(pool, kube, "team key", labels=["team-a"])
-    out = await service_client.post(P, json=pin_body(labels=["team-b"], X=r(team)))
+    team = await make(pool, kube, "team key", labels=["project:a"])
+    out = await service_client.post(P, json=pin_body(labels=["project:b"], X=r(team)))
     assert out.status_code == 422
     err = out.json()["error"]
     assert (err["code"], err["envs"]) == ("vault_label_mismatch", ["X"])
@@ -321,11 +347,11 @@ async def test_pins_label_mismatch_is_422_with_envs(service_client, pool, kube, 
 
 
 async def test_unknown_entry_then_unknown_env_then_mismatch(service_client, pool, kube):
-    team = await make(pool, kube, "team key", labels=["team-a"])
-    both = pin_body(labels=["team-b"], X=r(team), Y=r(uuid.uuid4()), Z=r(team, "NOPE"))
+    team = await make(pool, kube, "team key", labels=["project:a"])
+    both = pin_body(labels=["project:b"], X=r(team), Y=r(uuid.uuid4()), Z=r(team, "NOPE"))
     out = await service_client.post(P, json=both)
     assert out.json()["error"]["code"] == "vault_entry_unknown"
-    env_and_label = pin_body(labels=["team-b"], X=r(team), Z=r(team, "NOPE"))
+    env_and_label = pin_body(labels=["project:b"], X=r(team), Z=r(team, "NOPE"))
     out = await service_client.post(P, json=env_and_label)
     assert out.json()["error"]["code"] == "vault_env_unknown"
 
