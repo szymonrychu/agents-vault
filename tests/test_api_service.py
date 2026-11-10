@@ -197,7 +197,7 @@ async def test_preset_label_outside_the_project_slug_rule_is_accepted_literally(
     "body",
     [
         {"preset_labels": ["bad label!"], "refs": {}},
-        {"refs": {f"E{i}": r(uuid.uuid4()) for i in range(51)}},
+        {"refs": {f"E{i}": r(uuid.uuid4()) for i in range(101)}},
         {"refs": {"lower": r(uuid.uuid4())}},
         {"refs": {"A": r(uuid.uuid4(), "lower")}},
         {"refs": {"A": {"entry": "not-a-uuid", "env": "KEY"}}},
@@ -212,9 +212,9 @@ async def test_resolve_validation_is_422(service_client, body):
     assert out.json()["error"]["code"] == "invalid_request"
 
 
-async def test_fifty_refs_are_allowed(service_client):
+async def test_hundred_refs_are_allowed(service_client):
     out = await service_client.post(
-        f"{E}/resolve", json={"refs": {f"E{i}": r(uuid.uuid4()) for i in range(50)}}
+        f"{E}/resolve", json={"refs": {f"E{i}": r(uuid.uuid4()) for i in range(100)}}
     )
     assert out.status_code == 200
 
