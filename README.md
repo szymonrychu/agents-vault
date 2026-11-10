@@ -106,7 +106,7 @@ Query: `entry` (entry id), `before_id`, `limit` (1..200, default 50). Newest fir
 
 ## Service API
 
-Served by `vault serve-service` for the orchestrator, behind the bearer gate (`401 unauthorized` without a known token). It cannot create, rotate, edit or delete an entry. A preset references one env of an entry as `{"vault": "<entry id>", "env": "ENV"}`; the refs below are `{PRESET_ENV: {entry: <entry id>, env: ENV}}` (at most 50). Documented in `openapi-service.json`.
+Served by `vault serve-service` for the orchestrator, behind the bearer gate (`401 unauthorized` without a known token). It cannot create, rotate, edit or delete an entry. A preset references one env of an entry as `{"vault": "<entry id>", "env": "ENV"}`; the refs below are `{PRESET_ENV: {entry: <entry id>, env: ENV}}` (at most 100). Documented in `openapi-service.json`.
 
 ### `GET /vault/v1/entries`
 

@@ -24,7 +24,7 @@ from agents_vault.db import pins as pins_repo
 from agents_vault.k8s import secret_name
 
 ACTOR = "orchestrator"
-REFS_MAX = 50
+REFS_MAX = 100
 
 _PRESET_ENV = re.compile(r"[A-Z_][A-Z0-9_]*")
 _ENV = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")

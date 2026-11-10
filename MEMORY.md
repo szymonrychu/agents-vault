@@ -82,3 +82,4 @@ Lessons that outlive a session. Newest first.
 ## 2026-11-09 minimum length for protected values
 - A protected env value must be at least 8 characters (counted as characters, not bytes) on create and on rotate (`PUT /entries/{id}/value`); the web PATCH never takes a protected env, so no other write route needs the check. Refusal is 422 `vault_value_too_short` with a fixed message naming only the envs (and the minimum), never a value or its length. Readable values have no minimum; stored entries are not touched.
 - On rotate the check runs after the exact-env-set check, so the envs it names are always validated entry env names. Tests that used one-character protected values now use values of 8 or more characters.
+- 2026-11-10 the resolve/pin request ref cap (`REFS_MAX`) is 100 (was 50), matching the orchestrator's per-preset cap: infrastructure presets need about 60 references; user decision T-72 Q27.
