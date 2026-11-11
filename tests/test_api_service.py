@@ -560,3 +560,17 @@ async def test_scope_of_several_projects_matches_an_entry_of_any_of_them(
     assert outside.status_code == 422
     assert outside.json()["error"]["code"] == "vault_label_mismatch"
     assert outside.json()["error"]["envs"] == ["C"]
+
+
+async def test_unlabelled_entry_matches_a_multi_project_scope_like_a_single_one(
+    service_client, pool, kube
+):
+    open_key = await make(pool, kube, "open key")
+    for scope in (["project:a"], ["project:a", "project:b"]):
+        resolved = await service_client.post(
+            f"{E}/resolve", json={"preset_labels": scope, "refs": {"A": r(open_key)}}
+        )
+        assert resolved.json()["mismatched"] == []
+        pinned = await service_client.post(P, json=pin_body(labels=scope, A=r(open_key)))
+        assert pinned.status_code == 200
+        assert list(pinned.json()["pins"]) == ["A"]
