@@ -539,14 +539,38 @@ def test_web_app_has_no_resolve_or_pins_routes():
     assert not any(p.startswith(P) for p in paths)
 
 
-async def test_two_project_preset_labels_are_422(service_client):
-    for path, extra in ((f"{E}/resolve", {}), (P, {"session_id": str(uuid.uuid4())})):
-        r = await service_client.post(
-            path, json={"preset_labels": ["project:a", "Project:b"], "refs": {}, **extra}
-        )
-        assert r.status_code == 422
-        assert r.json()["error"]["code"] == "invalid_request"
-    one = await service_client.post(
-        f"{E}/resolve", json={"preset_labels": ["project:a", "team"], "refs": {}}
+async def test_scope_of_several_projects_matches_an_entry_of_any_of_them(
+    service_client, pool, kube
+):
+    # a session in several projects is a full member of each (T-120): an entry of any project
+    # in the scope matches, an entry of a project outside it does not
+    a = await make(pool, kube, "a key", labels=["project:a"])
+    b = await make(pool, kube, "b key", labels=["project:b", "team"])
+    c = await make(pool, kube, "c key", labels=["project:c"])
+    scope = ["project:a", "Project:b", "team-x"]
+    resolved = await service_client.post(
+        f"{E}/resolve", json={"preset_labels": scope, "refs": {"A": r(a), "B": r(b), "C": r(c)}}
     )
-    assert one.status_code == 200
+    assert resolved.status_code == 200
+    assert resolved.json()["mismatched"] == ["C"]
+    pinned = await service_client.post(P, json=pin_body(labels=scope, A=r(a), B=r(b)))
+    assert pinned.status_code == 200
+    assert sorted(pinned.json()["pins"]) == ["A", "B"]
+    outside = await service_client.post(P, json=pin_body(labels=scope, A=r(a), C=r(c)))
+    assert outside.status_code == 422
+    assert outside.json()["error"]["code"] == "vault_label_mismatch"
+    assert outside.json()["error"]["envs"] == ["C"]
+
+
+async def test_unlabelled_entry_matches_a_multi_project_scope_like_a_single_one(
+    service_client, pool, kube
+):
+    open_key = await make(pool, kube, "open key")
+    for scope in (["project:a"], ["project:a", "project:b"]):
+        resolved = await service_client.post(
+            f"{E}/resolve", json={"preset_labels": scope, "refs": {"A": r(open_key)}}
+        )
+        assert resolved.json()["mismatched"] == []
+        pinned = await service_client.post(P, json=pin_body(labels=scope, A=r(open_key)))
+        assert pinned.status_code == 200
+        assert list(pinned.json()["pins"]) == ["A"]
