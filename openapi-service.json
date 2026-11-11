@@ -190,6 +190,7 @@
         "properties": {
           "preset_labels": {
             "default": [],
+            "description": "The preset's labels plus one project: label per project of the scope (home and extra projects, at most 20 labels in all); an entry with project: labels matches when one of them is in the scope.",
             "items": {
               "type": "string"
             },
@@ -265,6 +266,7 @@
         "properties": {
           "preset_labels": {
             "default": [],
+            "description": "The preset's labels plus one project: label per project of the scope (home and extra projects, at most 20 labels in all); an entry with project: labels matches when one of them is in the scope.",
             "items": {
               "type": "string"
             },

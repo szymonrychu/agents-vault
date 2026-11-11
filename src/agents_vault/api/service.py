@@ -12,7 +12,7 @@ from typing import Any
 
 from agents_common.labels import labels_match, normalize_labels
 from fastapi import APIRouter, Request, Response
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents_vault import store
 from agents_vault.api.entries import _index, _mapped
@@ -58,7 +58,12 @@ def _check_refs(refs: dict[str, RefIn]) -> dict[str, RefIn]:
 
 
 class ResolveIn(_Strict):
-    preset_labels: list[str] = []
+    preset_labels: list[str] = Field(
+        default=[],
+        description="The preset's labels plus one project: label per project of the scope"
+        " (home and extra projects, at most 20 labels in all); an entry with project: labels"
+        " matches when one of them is in the scope.",
+    )
     refs: dict[str, RefIn]
 
     _refs = field_validator("refs")(_check_refs)
@@ -116,13 +121,11 @@ class PinsOut(BaseModel):
 
 def _preset_labels(raw: list[str]) -> list[str]:
     """Preset labels follow the orchestrator's grammar only; the `project:` slug rule is for
-    entry labels, so a preset label such as `project:a_b` is matched literally. A preset has at
-    most one `project:` label (its own project)."""
+    entry labels, so a preset label such as `project:a_b` is matched literally. The labels carry
+    one `project:` label per project of the caller's scope (home plus extra projects); an entry
+    matches when one of its `project:` labels is in that scope."""
     with _mapped():
-        labels = normalize_labels(raw)
-    if sum(1 for label in labels if label.startswith("project:")) > 1:
-        raise ApiError(422, "invalid_request", "preset_labels: at most one project: label")
-    return labels
+        return normalize_labels(raw)
 
 
 class _Classified:

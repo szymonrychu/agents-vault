@@ -18,4 +18,4 @@ Run `mise run test`, `mise run lint` and `mise run fmt` from this directory.
 - RBAC on `secrets` is `create`, `patch`, `delete` only: code never reads or lists a Secret.
 - Trust boundary: whatever can read Secrets in the agents namespace (cluster-admin sessions, privileged or docker-in-docker sessions, node root, cluster operators) is outside the vault's protection; rotation is the response after such access. State it in the README and keep it there.
 - The audit actor of a web action is `user:<email>` from the loopback-only SSO sidecar headers (`X-Forwarded-Email`, else `X-Forwarded-User`), else `user`; never trust these headers for the allowlist decision.
-- A preset carries at most one `project:` label on the service listener; a labels PATCH that changes or drops a `project:` label of an attached entry needs `?force=true`.
+- On the service listener `preset_labels` carries one `project:` label per project of the caller's scope (home plus extra projects, T-120); an entry matches when one of its `project:` labels is in that set; a labels PATCH that changes or drops a `project:` label of an attached entry needs `?force=true`.

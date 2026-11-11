@@ -9,7 +9,7 @@ A write-only secret vault for the agents system. An entry is a free-text name (u
 - a protected env's value goes straight into an immutable Kubernetes Secret (one per version, one data key per protected env) and is never stored in Postgres (no value, hash or length), logged or returned by any route;
 - a readable env's value (at most 4096 bytes) is stored in Postgres, shown in the web and service views, edited in place without a new version, and never put into an event.
 
-Label rule: only labels with the reserved prefix `project:` restrict where an entry may be attached. All other labels are descriptive tags: stored, normalised, searchable and shown, but never restricting. An entry without a `project:` label matches every preset; one with `project:` labels matches a preset only when the preset's effective labels (its own plus `project:<slug>`) share at least one of them (`agents_common.labels.labels_match`, agents-common v0.13.0).
+Label rule: only labels with the reserved prefix `project:` restrict where an entry may be attached. All other labels are descriptive tags: stored, normalised, searchable and shown, but never restricting. An entry without a `project:` label matches every preset; one with `project:` labels matches a preset only when the preset's effective labels (its own plus `project:<slug>`) share at least one of them (`agents_common.labels.labels_match`, agents-common v0.13.0). On the service listener the effective labels carry one `project:<slug>` per project of the caller's scope: a session assigned to several projects (home plus extra projects) may use entries of any of them.
 
 The orchestrator pins versions to sessions through the service listener: a protected env comes back as a Secret ref, a readable env as its value. The service has its own Postgres database (entries, entry envs, versions, pins, events).
 
@@ -114,7 +114,7 @@ Query: `q`, `name` (exact, case-insensitive: binds a name to its id). Entry summ
 
 ### `POST /vault/v1/entries/resolve`
 
-Body `{preset_labels, refs}`; `preset_labels` carries at most one `project:` label (422 `invalid_request` otherwise). Returns `{resolved, unknown, bad_env, mismatched}`: `resolved` per preset env, and the preset envs whose entry is unknown, whose entry has no such env, or whose entry labels do not match. Statuses: 200, 401, 422.
+Body `{preset_labels, refs}`; `preset_labels` is the preset's labels plus one `project:` label per project of the scope (home and extra projects; at most 20 labels, 422 `invalid_request` otherwise). A request with a single `project:` label is the one-project case. Returns `{resolved, unknown, bad_env, mismatched}`: `resolved` per preset env, and the preset envs whose entry is unknown, whose entry has no such env, or whose entry labels do not match. Statuses: 200, 401, 422.
 
 ### `POST /vault/v1/pins`
 
